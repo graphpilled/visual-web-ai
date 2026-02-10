@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Attention + KV Cache Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Attention + KV Cache Test</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    // RoPE: Apply rotary position embeddings
+    // q, k shape: [num_heads, head_dim]
+    // For decode: we process one position at a time
+    function createRoPEShader(numHeads, headDim, maxSeqLen) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;      // [num_heads, head_dim]
+@group(0) @binding(1) var<storage, read> cos_cache: array<f32>;  // [max_seq_len, head_dim/2]
+@group(0) @binding(2) var<storage, read> sin_cache: array<f32>;  // [max_seq_len, head_dim/2]
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+@group(0) @binding(4) var<uniform> pos: u32;  // Current position
+
+const NUM_HEADS = ${numHeads}u;
+const HEAD_DIM = ${headDim}u;
+const HALF_DIM = ${headDim / 2}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= NUM_HEADS * HEAD_DIM) { return; }
+  
+  let head = idx / HEAD_DIM;
+  let d = idx % HEAD_DIM;
+  
+  let input_val = input[idx];
+  
+  if (d < HALF_DIM) {
+    // First half: x * cos - x_rotate * sin
+    let cos_val = cos_cache[pos * HALF_DIM + d];
+    let sin_val = sin_cache[pos * HALF_DIM + d];
+    let x_rotate = input[head * HEAD_DIM + d + HALF_DIM];
+    output[idx] = input_val * cos_val - x_rotate * sin_val;
+  } else {
+    // Second half: x_rotate * cos + x * sin
+    let d2 = d - HALF_DIM;
+    let cos_val = cos_cache[pos * HALF_DIM + d2];
+    let sin_val = sin_cache[pos * HALF_DIM + d2];
+    let x_rotate = input[head * HEAD_DIM + d2];
+    output[idx] = x_rotate * sin_val + input_val * cos_val;
+  }
+}`;
+    }
+
+    // Attention scores: Q @ K^T for single query against KV cache
+    // Q: [num_heads, head_dim]
+    // K_cache: [num_heads, max_seq_len, head_dim]
+    // Output: [num_heads, seq_len] (attention scores)
+    function createAttentionScoresShader(numHeads, headDim, maxSeqLen) {
+      return `
+@group(0) @binding(0) var<storage, read> q: array<f32>;           // [num_heads, head_dim]
+@group(0) @binding(1) var<storage, read> k_cache: array<f32>;     // [num_heads, max_seq_len, head_dim]
+@group(0) @binding(2) var<storage, read_write> scores: array<f32>; // [num_heads, seq_len]
+@group(0) @binding(3) var<uniform> seq_len: u32;  // Current sequence length
+
+const NUM_HEADS = ${numHeads}u;
+const HEAD_DIM = ${headDim}u;
+const MAX_SEQ_LEN = ${maxSeqLen}u;
+const SCALE = ${1.0 / Math.sqrt(headDim)};
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= NUM_HEADS * seq_len) { return; }
+  
+  let head = idx / seq_len;
+  let pos = idx % seq_len;
+  
+  // Compute Q @ K^T for this head and position
+  var sum = 0.0;
+  let q_offset = head * HEAD_DIM;
+  let k_offset = head * MAX_SEQ_LEN * HEAD_DIM + pos * HEAD_DIM;
+  
+  for (var d = 0u; d < HEAD_DIM; d++) {
+    sum += q[q_offset + d] * k_cache[k_offset + d];
+  }
+  
+  scores[idx] = sum * SCALE;
+}`;
+    }
+
+    // Softmax over attention scores
+    // Input: [num_heads, seq_len]
+    // Output: [num_heads, seq_len] (normalized)
+    function createCausalSoftmaxShader(numHeads, maxSeqLen) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+@group(0) @binding(2) var<uniform> seq_len: u32;
+
+const NUM_HEADS = ${numHeads}u;
+const MAX_SEQ_LEN = ${maxSeqLen}u;
+
+@compute @workgroup_size(${numHeads})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let head = gid.x;
+  if (head >= NUM_HEADS) { return; }
+  
+  let offset = head * seq_len;
+  
+  // Find max for numerical stability
+  var max_val = -1e10;
+  for (var i = 0u; i < seq_len; i++) {
+    max_val = max(max_val, input[offset + i]);
+  }
+  
+  // Compute exp and sum
+  var sum = 0.0;
+  for (var i = 0u; i < seq_len; i++) {
+    let exp_val = exp(input[offset + i] - max_val);
+    output[offset + i] = exp_val;
+    sum += exp_val;
+  }
+  
+  // Normalize
+  for (var i = 0u; i < seq_len; i++) {
+    output[offset + i] /= sum;
+  }
+}`;
+    }
+
+    // Attention output: scores @ V
+    // scores: [num_heads, seq_len]
+    // V_cache: [num_heads, max_seq_len, head_dim]
+    // Output: [num_heads, head_dim]
+    function createAttentionOutputShader(numHeads, headDim, maxSeqLen) {
+      return `
+@group(0) @binding(0) var<storage, read> scores: array<f32>;      // [num_heads, seq_len]
+@group(0) @binding(1) var<storage, read> v_cache: array<f32>;     // [num_heads, max_seq_len, head_dim]
+@group(0) @binding(2) var<storage, read_write> output: array<f32>; // [num_heads, head_dim]
+@group(0) @binding(3) var<uniform> seq_len: u32;
+
+const NUM_HEADS = ${numHeads}u;
+const HEAD_DIM = ${headDim}u;
+const MAX_SEQ_LEN = ${maxSeqLen}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= NUM_HEADS * HEAD_DIM) { return; }
+  
+  let head = idx / HEAD_DIM;
+  let d = idx % HEAD_DIM;
+  
+  // Weighted sum over values
+  var sum = 0.0;
+  let score_offset = head * seq_len;
+  let v_head_offset = head * MAX_SEQ_LEN * HEAD_DIM;
+  
+  for (var pos = 0u; pos < seq_len; pos++) {
+    sum += scores[score_offset + pos] * v_cache[v_head_offset + pos * HEAD_DIM + d];
+  }
+  
+  output[idx] = sum;
+}`;
+    }
+
+    // Update KV cache: append new K, V to cache
+    function createKVCacheUpdateShader(numHeads, headDim, maxSeqLen) {
+      return `
+@group(0) @binding(0) var<storage, read> new_k: array<f32>;       // [num_heads, head_dim]
+@group(0) @binding(1) var<storage, read> new_v: array<f32>;       // [num_heads, head_dim]
+@group(0) @binding(2) var<storage, read_write> k_cache: array<f32>; // [num_heads, max_seq_len, head_dim]
+@group(0) @binding(3) var<storage, read_write> v_cache: array<f32>; // [num_heads, max_seq_len, head_dim]
+@group(0) @binding(4) var<uniform> pos: u32;  // Position to write to
+
+const NUM_HEADS = ${numHeads}u;
+const HEAD_DIM = ${headDim}u;
+const MAX_SEQ_LEN = ${maxSeqLen}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= NUM_HEADS * HEAD_DIM) { return; }
+  
+  let head = idx / HEAD_DIM;
+  let d = idx % HEAD_DIM;
+  
+  let cache_idx = head * MAX_SEQ_LEN * HEAD_DIM + pos * HEAD_DIM + d;
+  
+  k_cache[cache_idx] = new_k[idx];
+  v_cache[cache_idx] = new_v[idx];
+}`;
+    }
+
+    // Precompute RoPE cos/sin cache
+    function computeRoPECache(headDim, maxSeqLen, base = 10000) {
+      const halfDim = headDim / 2;
+      const cos_cache = new Float32Array(maxSeqLen * halfDim);
+      const sin_cache = new Float32Array(maxSeqLen * halfDim);
+      
+      for (let pos = 0; pos < maxSeqLen; pos++) {
+        for (let i = 0; i < halfDim; i++) {
+          const freq = 1.0 / Math.pow(base, (2 * i) / headDim);
+          const angle = pos * freq;
+          cos_cache[pos * halfDim + i] = Math.cos(angle);
+          sin_cache[pos * halfDim + i] = Math.sin(angle);
+        }
+      }
+      
+      return { cos_cache, sin_cache };
+    }
+
+    async function testAttention() {
+      log('=== Attention + KV Cache Test ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      log(`GPU: ${adapter.info?.vendor || 'unknown'}\n`);
+      
+      // Config (Qwen-0.5B-like)
+      const config = {
+        num_heads: 16,
+        head_dim: 64,
+        hidden_size: 1024,  // num_heads * head_dim
+        max_seq_len: 2048
+      };
+      
+      const { num_heads, head_dim, hidden_size, max_seq_len } = config;
+      
+      log('Config:', 'header');
+      log(`  num_heads: ${num_heads}`);
+      log(`  head_dim: ${head_dim}`);
+      log(`  hidden_size: ${hidden_size}`);
+      log(`  max_seq_len: ${max_seq_len}\n`);
+      
+      // KV cache memory
+      const kvCacheSize = 2 * num_heads * max_seq_len * head_dim * 4;
+      log(`KV cache size: ${(kvCacheSize / 1024 / 1024).toFixed(2)} MB\n`);
+      
+      // Precompute RoPE
+      const { cos_cache, sin_cache } = computeRoPECache(head_dim, max_seq_len);
+      
+      // Create buffers
+      const q_buffer = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const k_buffer = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const v_buffer = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const q_rope_buffer = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+      const k_rope_buffer = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+      
+      const k_cache = device.createBuffer({ size: num_heads * max_seq_len * head_dim * 4, usage: GPUBufferUsage.STORAGE });
+      const v_cache = device.createBuffer({ size: num_heads * max_seq_len * head_dim * 4, usage: GPUBufferUsage.STORAGE });
+      
+      const cos_buffer = device.createBuffer({ size: cos_cache.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const sin_buffer = device.createBuffer({ size: sin_cache.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(cos_buffer, 0, cos_cache);
+      device.queue.writeBuffer(sin_buffer, 0, sin_cache);
+      
+      const scores_buffer = device.createBuffer({ size: num_heads * max_seq_len * 4, usage: GPUBufferUsage.STORAGE });
+      const attn_probs_buffer = device.createBuffer({ size: num_heads * max_seq_len * 4, usage: GPUBufferUsage.STORAGE });
+      const attn_output_buffer = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      
+      // Uniform buffers for position and seq_len
+      const pos_buffer = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const seq_len_buffer = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      
+      // Compile pipelines
+      const compilePipeline = (shader) => {
+        const module = device.createShaderModule({ code: shader });
+        return device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+      };
+      
+      const pipelines = {
+        rope_q: compilePipeline(createRoPEShader(num_heads, head_dim, max_seq_len)),
+        rope_k: compilePipeline(createRoPEShader(num_heads, head_dim, max_seq_len)),
+        kv_update: compilePipeline(createKVCacheUpdateShader(num_heads, head_dim, max_seq_len)),
+        attn_scores: compilePipeline(createAttentionScoresShader(num_heads, head_dim, max_seq_len)),
+        softmax: compilePipeline(createCausalSoftmaxShader(num_heads, max_seq_len)),
+        attn_output: compilePipeline(createAttentionOutputShader(num_heads, head_dim, max_seq_len)),
+      };
+      
+      // Create bind groups
+      const rope_q_bg = device.createBindGroup({
+        layout: pipelines.rope_q.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: q_buffer } },
+          { binding: 1, resource: { buffer: cos_buffer } },
+          { binding: 2, resource: { buffer: sin_buffer } },
+          { binding: 3, resource: { buffer: q_rope_buffer } },
+          { binding: 4, resource: { buffer: pos_buffer } }
+        ]
+      });
+      
+      const rope_k_bg = device.createBindGroup({
+        layout: pipelines.rope_k.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: k_buffer } },
+          { binding: 1, resource: { buffer: cos_buffer } },
+          { binding: 2, resource: { buffer: sin_buffer } },
+          { binding: 3, resource: { buffer: k_rope_buffer } },
+          { binding: 4, resource: { buffer: pos_buffer } }
+        ]
+      });
+      
+      const kv_update_bg = device.createBindGroup({
+        layout: pipelines.kv_update.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: k_rope_buffer } },
+          { binding: 1, resource: { buffer: v_buffer } },
+          { binding: 2, resource: { buffer: k_cache } },
+          { binding: 3, resource: { buffer: v_cache } },
+          { binding: 4, resource: { buffer: pos_buffer } }
+        ]
+      });
+      
+      const attn_scores_bg = device.createBindGroup({
+        layout: pipelines.attn_scores.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: q_rope_buffer } },
+          { binding: 1, resource: { buffer: k_cache } },
+          { binding: 2, resource: { buffer: scores_buffer } },
+          { binding: 3, resource: { buffer: seq_len_buffer } }
+        ]
+      });
+      
+      const softmax_bg = device.createBindGroup({
+        layout: pipelines.softmax.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: scores_buffer } },
+          { binding: 1, resource: { buffer: attn_probs_buffer } },
+          { binding: 2, resource: { buffer: seq_len_buffer } }
+        ]
+      });
+      
+      const attn_output_bg = device.createBindGroup({
+        layout: pipelines.attn_output.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: attn_probs_buffer } },
+          { binding: 1, resource: { buffer: v_cache } },
+          { binding: 2, resource: { buffer: attn_output_buffer } },
+          { binding: 3, resource: { buffer: seq_len_buffer } }
+        ]
+      });
+      
+      // Test: simulate generation for multiple positions
+      log('--- Testing Autoregressive Generation ---\n', 'header');
+      
+      const runAttentionStep = (pos, seqLen) => {
+        // Update uniforms
+        device.queue.writeBuffer(pos_buffer, 0, new Uint32Array([pos]));
+        device.queue.writeBuffer(seq_len_buffer, 0, new Uint32Array([seqLen]));
+        
+        // Generate random Q, K, V for this position
+        const q = new Float32Array(hidden_size);
+        const k = new Float32Array(hidden_size);
+        const v = new Float32Array(hidden_size);
+        for (let i = 0; i < hidden_size; i++) {
+          q[i] = Math.random() - 0.5;
+          k[i] = Math.random() - 0.5;
+          v[i] = Math.random() - 0.5;
+        }
+        device.queue.writeBuffer(q_buffer, 0, q);
+        device.queue.writeBuffer(k_buffer, 0, k);
+        device.queue.writeBuffer(v_buffer, 0, v);
+        
+        const encoder = device.createCommandEncoder();
+        
+        // 1. RoPE on Q
+        let pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.rope_q);
+        pass.setBindGroup(0, rope_q_bg);
+        pass.dispatchWorkgroups(Math.ceil(hidden_size / 256));
+        pass.end();
+        
+        // 2. RoPE on K
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.rope_k);
+        pass.setBindGroup(0, rope_k_bg);
+        pass.dispatchWorkgroups(Math.ceil(hidden_size / 256));
+        pass.end();
+        
+        // 3. Update KV cache
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.kv_update);
+        pass.setBindGroup(0, kv_update_bg);
+        pass.dispatchWorkgroups(Math.ceil(hidden_size / 256));
+        pass.end();
+        
+        // 4. Compute attention scores
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.attn_scores);
+        pass.setBindGroup(0, attn_scores_bg);
+        pass.dispatchWorkgroups(Math.ceil(num_heads * seqLen / 256));
+        pass.end();
+        
+        // 5. Softmax
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.softmax);
+        pass.setBindGroup(0, softmax_bg);
+        pass.dispatchWorkgroups(1);  // One workgroup handles all heads
+        pass.end();
+        
+        // 6. Attention output
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.attn_output);
+        pass.setBindGroup(0, attn_output_bg);
+        pass.dispatchWorkgroups(Math.ceil(hidden_size / 256));
+        pass.end();
+        
+        device.queue.submit([encoder.finish()]);
+      };
+      
+      // Warmup: generate 10 tokens
+      for (let pos = 0; pos < 10; pos++) {
+        runAttentionStep(pos, pos + 1);
+      }
+      await device.queue.onSubmittedWorkDone();
+      
+      // Benchmark at different sequence lengths
+      const testLengths = [1, 10, 50, 100, 500, 1000];
+      
+      log('Attention latency at different sequence lengths:', 'header');
+      
+      for (const seqLen of testLengths) {
+        // Reset cache by processing up to seqLen
+        for (let pos = 0; pos < seqLen; pos++) {
+          runAttentionStep(pos, pos + 1);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Benchmark adding one more token
+        const iterations = 50;
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          runAttentionStep(seqLen, seqLen + 1);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const elapsed = (performance.now() - start) / iterations;
+        
+        log(`  seq_len=${seqLen.toString().padStart(4)}: ${elapsed.toFixed(3)}ms`, elapsed < 5 ? 'pass' : 'warn');
+      }
+      
+      // Full layer projection
+      log('\n--- Full Model Projection ---\n', 'header');
+      
+      // Attention time at seq_len=100
+      const attnTime = 0.5; // approximate from above
+      const projTime = 0.19 * 4;  // Q, K, V, O projections
+      const ffnTime = 0.42 * 2 + 0.42;  // gate, up, down
+      const layerTime = attnTime + projTime + ffnTime;
+      
+      log(`Per-layer breakdown (seq_len=100):`);
+      log(`  QKV + O projections: ~${(projTime).toFixed(2)}ms`);
+      log(`  Attention: ~${attnTime.toFixed(2)}ms`);
+      log(`  FFN: ~${ffnTime.toFixed(2)}ms`);
+      log(`  Total per layer: ~${layerTime.toFixed(2)}ms`);
+      
+      const numLayers = 24;
+      const totalTime = layerTime * numLayers;
+      log(`\n24-layer model: ~${totalTime.toFixed(1)}ms/token = ${(1000/totalTime).toFixed(1)} tokens/sec`);
+      
+      log('\n=== TEST COMPLETE ===', 'pass');
+    }
+    
+    testAttention().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

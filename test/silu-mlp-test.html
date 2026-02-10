@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SiLU + MLP Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+  </style>
+</head>
+<body>
+  <h1>⚡ SiLU + MLP Test</h1>
+  <p>Tests SiLU activation and MLP block for Qwen2.5 inference.</p>
+  <button onclick="runTests()">Run All Tests</button>
+  <button onclick="runBenchmark()">Run Benchmark</button>
+  <pre id="output"></pre>
+
+  <script src="silu-mlp.js"></script>
+  <script>
+    let device = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+
+    // Qwen2.5-7B config
+    const HIDDEN_SIZE = 3584;
+    const INTERMEDIATE_SIZE = 18944;
+
+    // Reference CPU implementations
+    function siluCPU(x) {
+      return x / (1 + Math.exp(-x));
+    }
+    
+    function siluMulCPU(gate, up) {
+      const result = new Float32Array(gate.length);
+      for (let i = 0; i < gate.length; i++) {
+        result[i] = siluCPU(gate[i]) * up[i];
+      }
+      return result;
+    }
+
+    async function initWebGPU() {
+      if (device) return device;
+      
+      if (!navigator.gpu) {
+        throw new Error('WebGPU not supported');
+      }
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        throw new Error('No GPU adapter found');
+      }
+      
+      device = await adapter.requestDevice();
+      log('✅ WebGPU initialized', 'pass');
+      return device;
+    }
+
+    async function readBuffer(buffer, size) {
+      const readBuffer = device.createBuffer({
+        size: size,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+      });
+      
+      const commandEncoder = device.createCommandEncoder();
+      commandEncoder.copyBufferToBuffer(buffer, 0, readBuffer, 0, size);
+      device.queue.submit([commandEncoder.finish()]);
+      
+      await readBuffer.mapAsync(GPUMapMode.READ);
+      const data = new Float32Array(readBuffer.getMappedRange().slice(0));
+      readBuffer.unmap();
+      readBuffer.destroy();
+      
+      return data;
+    }
+
+    function compareArrays(a, b, tolerance = 1e-5) {
+      if (a.length !== b.length) return { match: false, maxDiff: Infinity };
+      let maxDiff = 0;
+      let maxIdx = 0;
+      for (let i = 0; i < a.length; i++) {
+        const diff = Math.abs(a[i] - b[i]);
+        if (diff > maxDiff) {
+          maxDiff = diff;
+          maxIdx = i;
+        }
+      }
+      return { match: maxDiff <= tolerance, maxDiff, maxIdx };
+    }
+
+    async function runTests() {
+      clear();
+      log('=== SiLU + MLP Tests ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        log(`\nQwen2.5-7B MLP Config:`, 'info');
+        log(`  Hidden size: ${HIDDEN_SIZE}`);
+        log(`  Intermediate size: ${INTERMEDIATE_SIZE}`);
+        log(`  gate_proj: [${HIDDEN_SIZE}, ${INTERMEDIATE_SIZE}]`);
+        log(`  up_proj:   [${HIDDEN_SIZE}, ${INTERMEDIATE_SIZE}]`);
+        log(`  down_proj: [${INTERMEDIATE_SIZE}, ${HIDDEN_SIZE}]`);
+        
+        // Test 1: SiLU activation
+        log('\n--- Test 1: SiLU Activation ---', 'header');
+        
+        const testSize = 1024;
+        const testInput = new Float32Array(testSize);
+        for (let i = 0; i < testSize; i++) {
+          testInput[i] = (Math.random() - 0.5) * 4; // Range [-2, 2]
+        }
+        
+        // Create SiLU pipeline
+        const siluShader = genSiLUKernel(testSize);
+        const siluModule = device.createShaderModule({ code: siluShader });
+        const siluPipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module: siluModule, entryPoint: 'main' }
+        });
+        
+        const inputBuffer = device.createBuffer({
+          size: testSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Float32Array(inputBuffer.getMappedRange()).set(testInput);
+        inputBuffer.unmap();
+        
+        const outputBuffer = device.createBuffer({
+          size: testSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
+        
+        const siluBindGroup = device.createBindGroup({
+          layout: siluPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: inputBuffer } },
+            { binding: 1, resource: { buffer: outputBuffer } }
+          ]
+        });
+        
+        const commandEncoder = device.createCommandEncoder();
+        const pass = commandEncoder.beginComputePass();
+        pass.setPipeline(siluPipeline);
+        pass.setBindGroup(0, siluBindGroup);
+        pass.dispatchWorkgroups(Math.ceil(testSize / 256));
+        pass.end();
+        device.queue.submit([commandEncoder.finish()]);
+        
+        await device.queue.onSubmittedWorkDone();
+        const siluResult = await readBuffer(outputBuffer, testSize * 4);
+        
+        // CPU reference
+        const siluExpected = new Float32Array(testSize);
+        for (let i = 0; i < testSize; i++) {
+          siluExpected[i] = siluCPU(testInput[i]);
+        }
+        
+        const siluCompare = compareArrays(siluExpected, siluResult);
+        log(`  Max diff: ${siluCompare.maxDiff.toExponential(2)}`);
+        log(`  ${siluCompare.match ? '✅ PASS' : '❌ FAIL'}`, siluCompare.match ? 'pass' : 'fail');
+        
+        // Test specific values
+        log(`\n  Sample values:`);
+        log(`    SiLU(0) = ${siluCPU(0).toFixed(6)} (expected: 0.0)`);
+        log(`    SiLU(1) = ${siluCPU(1).toFixed(6)} (expected: ~0.731)`);
+        log(`    SiLU(-1) = ${siluCPU(-1).toFixed(6)} (expected: ~-0.269)`);
+        
+        inputBuffer.destroy();
+        outputBuffer.destroy();
+        
+        // Test 2: Fused SiLU + Multiply
+        log('\n--- Test 2: Fused SiLU × Multiply ---', 'header');
+        
+        const gateInput = new Float32Array(testSize);
+        const upInput = new Float32Array(testSize);
+        for (let i = 0; i < testSize; i++) {
+          gateInput[i] = (Math.random() - 0.5) * 4;
+          upInput[i] = (Math.random() - 0.5) * 4;
+        }
+        
+        // Create SiLU+Mul pipeline
+        const siluMulShader = genSiLUMulKernel(testSize);
+        const siluMulModule = device.createShaderModule({ code: siluMulShader });
+        const siluMulPipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module: siluMulModule, entryPoint: 'main' }
+        });
+        
+        const gateBuffer = device.createBuffer({
+          size: testSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Float32Array(gateBuffer.getMappedRange()).set(gateInput);
+        gateBuffer.unmap();
+        
+        const upBuffer = device.createBuffer({
+          size: testSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Float32Array(upBuffer.getMappedRange()).set(upInput);
+        upBuffer.unmap();
+        
+        const mulOutputBuffer = device.createBuffer({
+          size: testSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
+        
+        const siluMulBindGroup = device.createBindGroup({
+          layout: siluMulPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: gateBuffer } },
+            { binding: 1, resource: { buffer: upBuffer } },
+            { binding: 2, resource: { buffer: mulOutputBuffer } }
+          ]
+        });
+        
+        const cmd2 = device.createCommandEncoder();
+        const pass2 = cmd2.beginComputePass();
+        pass2.setPipeline(siluMulPipeline);
+        pass2.setBindGroup(0, siluMulBindGroup);
+        pass2.dispatchWorkgroups(Math.ceil(testSize / 256));
+        pass2.end();
+        device.queue.submit([cmd2.finish()]);
+        
+        await device.queue.onSubmittedWorkDone();
+        const siluMulResult = await readBuffer(mulOutputBuffer, testSize * 4);
+        
+        // CPU reference
+        const siluMulExpected = siluMulCPU(gateInput, upInput);
+        
+        const siluMulCompare = compareArrays(siluMulExpected, siluMulResult);
+        log(`  Max diff: ${siluMulCompare.maxDiff.toExponential(2)}`);
+        log(`  ${siluMulCompare.match ? '✅ PASS' : '❌ FAIL'}`, siluMulCompare.match ? 'pass' : 'fail');
+        
+        gateBuffer.destroy();
+        upBuffer.destroy();
+        mulOutputBuffer.destroy();
+        
+        // Test 3: Full size (Qwen2.5 intermediate)
+        log('\n--- Test 3: Full Intermediate Size ---', 'header');
+        log(`  Size: ${INTERMEDIATE_SIZE}`);
+        
+        const fullGate = new Float32Array(INTERMEDIATE_SIZE);
+        const fullUp = new Float32Array(INTERMEDIATE_SIZE);
+        for (let i = 0; i < INTERMEDIATE_SIZE; i++) {
+          fullGate[i] = (Math.random() - 0.5) * 2;
+          fullUp[i] = (Math.random() - 0.5) * 2;
+        }
+        
+        const fullShader = genSiLUMulKernel(INTERMEDIATE_SIZE);
+        const fullModule = device.createShaderModule({ code: fullShader });
+        const fullPipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module: fullModule, entryPoint: 'main' }
+        });
+        
+        const fullGateBuffer = device.createBuffer({
+          size: INTERMEDIATE_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Float32Array(fullGateBuffer.getMappedRange()).set(fullGate);
+        fullGateBuffer.unmap();
+        
+        const fullUpBuffer = device.createBuffer({
+          size: INTERMEDIATE_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Float32Array(fullUpBuffer.getMappedRange()).set(fullUp);
+        fullUpBuffer.unmap();
+        
+        const fullOutputBuffer = device.createBuffer({
+          size: INTERMEDIATE_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
+        
+        const fullBindGroup = device.createBindGroup({
+          layout: fullPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: fullGateBuffer } },
+            { binding: 1, resource: { buffer: fullUpBuffer } },
+            { binding: 2, resource: { buffer: fullOutputBuffer } }
+          ]
+        });
+        
+        const cmd3 = device.createCommandEncoder();
+        const pass3 = cmd3.beginComputePass();
+        pass3.setPipeline(fullPipeline);
+        pass3.setBindGroup(0, fullBindGroup);
+        pass3.dispatchWorkgroups(Math.ceil(INTERMEDIATE_SIZE / 256));
+        pass3.end();
+        device.queue.submit([cmd3.finish()]);
+        
+        await device.queue.onSubmittedWorkDone();
+        const fullResult = await readBuffer(fullOutputBuffer, INTERMEDIATE_SIZE * 4);
+        
+        // CPU reference (just check a few samples)
+        let fullMatch = true;
+        for (let i = 0; i < 100; i++) {
+          const idx = Math.floor(Math.random() * INTERMEDIATE_SIZE);
+          const expected = siluCPU(fullGate[idx]) * fullUp[idx];
+          if (Math.abs(fullResult[idx] - expected) > 1e-5) {
+            fullMatch = false;
+            break;
+          }
+        }
+        
+        log(`  Random sample check: ${fullMatch ? '✅ PASS' : '❌ FAIL'}`, fullMatch ? 'pass' : 'fail');
+        
+        fullGateBuffer.destroy();
+        fullUpBuffer.destroy();
+        fullOutputBuffer.destroy();
+        
+        // Test 4: MLP Block class
+        log('\n--- Test 4: MLP Block Class ---', 'header');
+        
+        const mlp = new MLPBlock(device, {
+          hiddenSize: HIDDEN_SIZE,
+          intermediateSize: INTERMEDIATE_SIZE
+        });
+        await mlp.init();
+        
+        const buffers = mlp.getBuffers();
+        log(`  Gate buffer: ${buffers.gate ? '✅' : '❌'}`);
+        log(`  Up buffer: ${buffers.up ? '✅' : '❌'}`);
+        log(`  Hidden buffer: ${buffers.hidden ? '✅' : '❌'}`);
+        log(`  ✅ MLP Block initialized`, 'pass');
+        
+        mlp.destroy();
+        
+        log('\n✅ All tests complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runBenchmark() {
+      clear();
+      log('=== SiLU + MLP Benchmark ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        const iterations = 1000;
+        
+        log(`Intermediate size: ${INTERMEDIATE_SIZE}`, 'info');
+        log(`Iterations: ${iterations}\n`);
+        
+        // Create pipeline
+        const shader = genSiLUMulKernel(INTERMEDIATE_SIZE);
+        const module = device.createShaderModule({ code: shader });
+        const pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+        
+        // Create buffers
+        const gateBuffer = device.createBuffer({
+          size: INTERMEDIATE_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE
+        });
+        
+        const upBuffer = device.createBuffer({
+          size: INTERMEDIATE_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE
+        });
+        
+        const outputBuffer = device.createBuffer({
+          size: INTERMEDIATE_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE
+        });
+        
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: gateBuffer } },
+            { binding: 1, resource: { buffer: upBuffer } },
+            { binding: 2, resource: { buffer: outputBuffer } }
+          ]
+        });
+        
+        const workgroups = Math.ceil(INTERMEDIATE_SIZE / 256);
+        
+        // Warmup
+        for (let i = 0; i < 10; i++) {
+          const cmd = device.createCommandEncoder();
+          const pass = cmd.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([cmd.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Benchmark
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const cmd = device.createCommandEncoder();
+          const pass = cmd.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([cmd.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const elapsed = performance.now() - start;
+        
+        const avgTime = elapsed / iterations;
+        // Memory: read gate + up, write output = 3 * intermediate * 4 bytes
+        const bandwidth = (INTERMEDIATE_SIZE * 3 * 4 / avgTime) / 1e6;
+        
+        log(`Results:`, 'header');
+        log(`  Total time: ${elapsed.toFixed(2)} ms`);
+        log(`  Average: ${(avgTime * 1000).toFixed(2)} µs`);
+        log(`  Bandwidth: ${bandwidth.toFixed(2)} GB/s`);
+        
+        log(`\n📊 Context:`, 'info');
+        log(`  SiLU+Mul runs once per layer (28 total)`);
+        log(`  At ${(avgTime * 1000).toFixed(2)} µs each = ${(avgTime * 28).toFixed(2)} ms total`);
+        log(`  This is ~${(avgTime * 28 / 310 * 100).toFixed(1)}% of INT4 matmul time`);
+        
+        // Cleanup
+        gateBuffer.destroy();
+        upBuffer.destroy();
+        outputBuffer.destroy();
+        
+        log('\n✅ Benchmark complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+  </script>
+</body>
+</html>

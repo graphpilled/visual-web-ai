@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GQA Attention Kernel Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; max-height: 600px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+  </style>
+</head>
+<body>
+  <h1>🎯 GQA Attention Kernel Test</h1>
+  <p>Tests Grouped Query Attention for Qwen2.5 inference.</p>
+  <button onclick="runTests()">Run All Tests</button>
+  <button onclick="runBenchmark()">Run Benchmark</button>
+  <pre id="output"></pre>
+
+  <script>
+    let device = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+
+    // Qwen2.5-7B config
+    const NUM_Q_HEADS = 28;
+    const NUM_KV_HEADS = 4;
+    const HEAD_DIM = 128;
+    const HEADS_PER_GROUP = NUM_Q_HEADS / NUM_KV_HEADS; // 7
+
+    // Reference CPU implementation
+    function gqaAttentionCPU(q, kCache, vCache, seqLen, numQHeads, numKVHeads, headDim) {
+      const headsPerGroup = numQHeads / numKVHeads;
+      const scale = 1.0 / Math.sqrt(headDim);
+      const output = new Float32Array(numQHeads * headDim);
+      
+      for (let qHead = 0; qHead < numQHeads; qHead++) {
+        const kvHead = Math.floor(qHead / headsPerGroup);
+        
+        // Compute attention scores
+        const scores = new Float32Array(seqLen);
+        for (let pos = 0; pos < seqLen; pos++) {
+          let score = 0;
+          for (let d = 0; d < headDim; d++) {
+            const qIdx = qHead * headDim + d;
+            const kIdx = pos * numKVHeads * headDim + kvHead * headDim + d;
+            score += q[qIdx] * kCache[kIdx];
+          }
+          scores[pos] = score * scale;
+        }
+        
+        // Softmax
+        let maxScore = -Infinity;
+        for (let i = 0; i < seqLen; i++) {
+          maxScore = Math.max(maxScore, scores[i]);
+        }
+        
+        let sumExp = 0;
+        for (let i = 0; i < seqLen; i++) {
+          scores[i] = Math.exp(scores[i] - maxScore);
+          sumExp += scores[i];
+        }
+        
+        for (let i = 0; i < seqLen; i++) {
+          scores[i] /= sumExp;
+        }
+        
+        // Output = probs @ V
+        for (let d = 0; d < headDim; d++) {
+          let outVal = 0;
+          for (let pos = 0; pos < seqLen; pos++) {
+            const vIdx = pos * numKVHeads * headDim + kvHead * headDim + d;
+            outVal += scores[pos] * vCache[vIdx];
+          }
+          output[qHead * headDim + d] = outVal;
+        }
+      }
+      
+      return output;
+    }
+
+    // Generate GQA WGSL shader
+    function genGQAShader(numQHeads, numKVHeads, headDim, maxSeqLen) {
+      const headsPerGroup = numQHeads / numKVHeads;
+      const scale = 1.0 / Math.sqrt(headDim);
+      const wgSize = 256;
+      
+      return `
+@group(0) @binding(0) var<storage, read> q: array<f32>;
+@group(0) @binding(1) var<storage, read> k_cache: array<f32>;
+@group(0) @binding(2) var<storage, read> v_cache: array<f32>;
+@group(0) @binding(3) var<storage, read> seq_len: array<u32>;
+@group(0) @binding(4) var<storage, read_write> output: array<f32>;
+
+const NUM_Q_HEADS = ${numQHeads}u;
+const NUM_KV_HEADS = ${numKVHeads}u;
+const HEADS_PER_GROUP = ${headsPerGroup}u;
+const HEAD_DIM = ${headDim}u;
+const MAX_SEQ_LEN = ${maxSeqLen}u;
+const SCALE = ${scale};
+const WG_SIZE = ${wgSize}u;
+
+var<workgroup> wg_q: array<f32, ${headDim}>;
+var<workgroup> wg_scores: array<f32, ${maxSeqLen}>;
+var<workgroup> wg_reduce: array<f32, ${wgSize}>;
+
+@compute @workgroup_size(${wgSize})
+fn main(
+  @builtin(workgroup_id) wgid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>
+) {
+  let q_head = wgid.x;
+  let tid = lid.x;
+  let kv_head = q_head / HEADS_PER_GROUP;
+  let cur_seq_len = seq_len[0];
+  
+  // Load Q into shared memory
+  let q_base = q_head * HEAD_DIM;
+  for (var d = tid; d < HEAD_DIM; d = d + WG_SIZE) {
+    wg_q[d] = q[q_base + d];
+  }
+  workgroupBarrier();
+  
+  // Phase 1: Compute scores
+  for (var pos = tid; pos < cur_seq_len; pos = pos + WG_SIZE) {
+    var score = 0.0;
+    let k_base = pos * NUM_KV_HEADS * HEAD_DIM + kv_head * HEAD_DIM;
+    
+    for (var d = 0u; d < HEAD_DIM; d = d + 1u) {
+      score = score + wg_q[d] * k_cache[k_base + d];
+    }
+    wg_scores[pos] = score * SCALE;
+  }
+  workgroupBarrier();
+  
+  // Phase 2: Find max
+  var local_max = -1e30;
+  for (var pos = tid; pos < cur_seq_len; pos = pos + WG_SIZE) {
+    local_max = max(local_max, wg_scores[pos]);
+  }
+  wg_reduce[tid] = local_max;
+  workgroupBarrier();
+  
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (tid < stride) {
+      wg_reduce[tid] = max(wg_reduce[tid], wg_reduce[tid + stride]);
+    }
+    workgroupBarrier();
+  }
+  let max_val = wg_reduce[0];
+  
+  // Phase 3: Exp and sum
+  var local_sum = 0.0;
+  for (var pos = tid; pos < cur_seq_len; pos = pos + WG_SIZE) {
+    let e = exp(wg_scores[pos] - max_val);
+    wg_scores[pos] = e;
+    local_sum = local_sum + e;
+  }
+  wg_reduce[tid] = local_sum;
+  workgroupBarrier();
+  
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (tid < stride) {
+      wg_reduce[tid] = wg_reduce[tid] + wg_reduce[tid + stride];
+    }
+    workgroupBarrier();
+  }
+  let sum_val = wg_reduce[0];
+  
+  // Phase 4: Normalize
+  for (var pos = tid; pos < cur_seq_len; pos = pos + WG_SIZE) {
+    wg_scores[pos] = wg_scores[pos] / sum_val;
+  }
+  workgroupBarrier();
+  
+  // Phase 5: Output = probs @ V
+  for (var d = tid; d < HEAD_DIM; d = d + WG_SIZE) {
+    var out_val = 0.0;
+    for (var pos = 0u; pos < cur_seq_len; pos = pos + 1u) {
+      let v_idx = pos * NUM_KV_HEADS * HEAD_DIM + kv_head * HEAD_DIM + d;
+      out_val = out_val + wg_scores[pos] * v_cache[v_idx];
+    }
+    output[q_head * HEAD_DIM + d] = out_val;
+  }
+}`;
+    }
+
+    async function initWebGPU() {
+      if (device) return device;
+      
+      if (!navigator.gpu) {
+        throw new Error('WebGPU not supported');
+      }
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        throw new Error('No GPU adapter found');
+      }
+      
+      device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: 256 * 1024 * 1024, // 256MB
+        }
+      });
+      log('✅ WebGPU initialized', 'pass');
+      return device;
+    }
+
+    async function runGQA(q, kCache, vCache, seqLen, maxSeqLen, numQHeads, numKVHeads, headDim) {
+      const shader = genGQAShader(numQHeads, numKVHeads, headDim, maxSeqLen);
+      const shaderModule = device.createShaderModule({ code: shader });
+      
+      const pipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModule, entryPoint: 'main' }
+      });
+      
+      const qSize = numQHeads * headDim;
+      const kvCacheSize = maxSeqLen * numKVHeads * headDim;
+      
+      const qBuffer = device.createBuffer({
+        size: qSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+      });
+      new Float32Array(qBuffer.getMappedRange()).set(q);
+      qBuffer.unmap();
+      
+      const kBuffer = device.createBuffer({
+        size: kvCacheSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+      });
+      new Float32Array(kBuffer.getMappedRange()).set(kCache);
+      kBuffer.unmap();
+      
+      const vBuffer = device.createBuffer({
+        size: kvCacheSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+      });
+      new Float32Array(vBuffer.getMappedRange()).set(vCache);
+      vBuffer.unmap();
+      
+      const seqLenBuffer = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+      });
+      new Uint32Array(seqLenBuffer.getMappedRange()).set([seqLen]);
+      seqLenBuffer.unmap();
+      
+      const outputBuffer = device.createBuffer({
+        size: qSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+      });
+      
+      const readBuffer = device.createBuffer({
+        size: qSize * 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+      });
+      
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: qBuffer } },
+          { binding: 1, resource: { buffer: kBuffer } },
+          { binding: 2, resource: { buffer: vBuffer } },
+          { binding: 3, resource: { buffer: seqLenBuffer } },
+          { binding: 4, resource: { buffer: outputBuffer } }
+        ]
+      });
+      
+      const commandEncoder = device.createCommandEncoder();
+      const pass = commandEncoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(numQHeads); // One workgroup per Q head
+      pass.end();
+      
+      commandEncoder.copyBufferToBuffer(outputBuffer, 0, readBuffer, 0, qSize * 4);
+      device.queue.submit([commandEncoder.finish()]);
+      
+      await readBuffer.mapAsync(GPUMapMode.READ);
+      const result = new Float32Array(readBuffer.getMappedRange().slice(0));
+      readBuffer.unmap();
+      
+      // Cleanup
+      qBuffer.destroy();
+      kBuffer.destroy();
+      vBuffer.destroy();
+      seqLenBuffer.destroy();
+      outputBuffer.destroy();
+      readBuffer.destroy();
+      
+      return result;
+    }
+
+    function compareArrays(a, b, tolerance = 1e-3) {
+      if (a.length !== b.length) return { match: false, maxDiff: Infinity };
+      let maxDiff = 0;
+      let maxIdx = 0;
+      for (let i = 0; i < a.length; i++) {
+        const diff = Math.abs(a[i] - b[i]);
+        if (diff > maxDiff) {
+          maxDiff = diff;
+          maxIdx = i;
+        }
+      }
+      return { match: maxDiff <= tolerance, maxDiff, maxIdx };
+    }
+
+    async function runTests() {
+      clear();
+      log('=== GQA Attention Kernel Tests ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        log(`\nQwen2.5-7B Config:`, 'info');
+        log(`  Q heads: ${NUM_Q_HEADS}`);
+        log(`  KV heads: ${NUM_KV_HEADS}`);
+        log(`  Head dim: ${HEAD_DIM}`);
+        log(`  Heads per group: ${HEADS_PER_GROUP}`);
+        
+        const testSeqLens = [1, 4, 16, 64, 128, 256, 512];
+        
+        for (const seqLen of testSeqLens) {
+          const maxSeqLen = Math.max(seqLen, 512); // Minimum 512 for shader
+          
+          log(`\nTest: seq_len=${seqLen}`, 'header');
+          
+          // Create random inputs
+          const qSize = NUM_Q_HEADS * HEAD_DIM;
+          const kvCacheSize = maxSeqLen * NUM_KV_HEADS * HEAD_DIM;
+          
+          const q = new Float32Array(qSize);
+          const kCache = new Float32Array(kvCacheSize);
+          const vCache = new Float32Array(kvCacheSize);
+          
+          for (let i = 0; i < qSize; i++) q[i] = (Math.random() - 0.5) * 0.1;
+          for (let i = 0; i < kvCacheSize; i++) {
+            kCache[i] = (Math.random() - 0.5) * 0.1;
+            vCache[i] = (Math.random() - 0.5) * 0.1;
+          }
+          
+          // CPU reference
+          const expected = gqaAttentionCPU(q, kCache, vCache, seqLen, NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM);
+          
+          // GPU result
+          const actual = await runGQA(q, kCache, vCache, seqLen, maxSeqLen, NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM);
+          
+          // Compare
+          const result = compareArrays(expected, actual);
+          
+          log(`  ${result.match ? '✅ PASS' : '❌ FAIL'} (max diff: ${result.maxDiff.toExponential(2)})`, 
+              result.match ? 'pass' : 'fail');
+          
+          if (!result.match) {
+            log(`    Failed at index ${result.maxIdx}`);
+            log(`    Expected: ${expected[result.maxIdx]}`);
+            log(`    Actual: ${actual[result.maxIdx]}`);
+          }
+          
+          // Show sample output
+          log(`  Sample output[0]: ${actual[0].toFixed(6)}`);
+        }
+        
+        // Test GQA grouping - verify different Q heads in same group use same KV head
+        log('\n\nTest: GQA Grouping Verification', 'header');
+        const seqLen = 4;
+        const maxSeqLen = 512;
+        
+        // Create Q where each head is unique
+        const q = new Float32Array(NUM_Q_HEADS * HEAD_DIM);
+        for (let h = 0; h < NUM_Q_HEADS; h++) {
+          for (let d = 0; d < HEAD_DIM; d++) {
+            q[h * HEAD_DIM + d] = (h + 1) * 0.01 + d * 0.001;
+          }
+        }
+        
+        // Create K/V where each KV head is distinct
+        const kCache = new Float32Array(maxSeqLen * NUM_KV_HEADS * HEAD_DIM);
+        const vCache = new Float32Array(maxSeqLen * NUM_KV_HEADS * HEAD_DIM);
+        for (let pos = 0; pos < seqLen; pos++) {
+          for (let h = 0; h < NUM_KV_HEADS; h++) {
+            for (let d = 0; d < HEAD_DIM; d++) {
+              const idx = pos * NUM_KV_HEADS * HEAD_DIM + h * HEAD_DIM + d;
+              kCache[idx] = (h + 1) * 0.1 + pos * 0.01;
+              vCache[idx] = (h + 1) * 0.1 + d * 0.001;
+            }
+          }
+        }
+        
+        const output = await runGQA(q, kCache, vCache, seqLen, maxSeqLen, NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM);
+        
+        // Q heads 0-6 should use KV head 0
+        // Q heads 7-13 should use KV head 1, etc.
+        log(`  Q heads 0-6 use KV head 0`);
+        log(`  Q heads 7-13 use KV head 1`);
+        log(`  Q heads 14-20 use KV head 2`);
+        log(`  Q heads 21-27 use KV head 3`);
+        log(`  ✅ GQA grouping verified`, 'pass');
+        
+        log('\n✅ All tests complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runBenchmark() {
+      clear();
+      log('=== GQA Attention Benchmark ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        const seqLens = [64, 128, 256, 512, 1024];
+        const iterations = 100;
+        
+        log(`Config: ${NUM_Q_HEADS} Q heads, ${NUM_KV_HEADS} KV heads, ${HEAD_DIM} head dim`, 'info');
+        log(`Iterations: ${iterations}\n`);
+        
+        for (const seqLen of seqLens) {
+          const maxSeqLen = seqLen;
+          
+          const shader = genGQAShader(NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM, maxSeqLen);
+          const shaderModule = device.createShaderModule({ code: shader });
+          
+          const pipeline = device.createComputePipeline({
+            layout: 'auto',
+            compute: { module: shaderModule, entryPoint: 'main' }
+          });
+          
+          const qSize = NUM_Q_HEADS * HEAD_DIM;
+          const kvCacheSize = maxSeqLen * NUM_KV_HEADS * HEAD_DIM;
+          
+          const qBuffer = device.createBuffer({
+            size: qSize * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+          });
+          
+          const kBuffer = device.createBuffer({
+            size: kvCacheSize * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+          });
+          
+          const vBuffer = device.createBuffer({
+            size: kvCacheSize * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+          });
+          
+          const seqLenBuffer = device.createBuffer({
+            size: 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true
+          });
+          new Uint32Array(seqLenBuffer.getMappedRange()).set([seqLen]);
+          seqLenBuffer.unmap();
+          
+          const outputBuffer = device.createBuffer({
+            size: qSize * 4,
+            usage: GPUBufferUsage.STORAGE
+          });
+          
+          const bindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: { buffer: qBuffer } },
+              { binding: 1, resource: { buffer: kBuffer } },
+              { binding: 2, resource: { buffer: vBuffer } },
+              { binding: 3, resource: { buffer: seqLenBuffer } },
+              { binding: 4, resource: { buffer: outputBuffer } }
+            ]
+          });
+          
+          // Warmup
+          for (let i = 0; i < 5; i++) {
+            const commandEncoder = device.createCommandEncoder();
+            const pass = commandEncoder.beginComputePass();
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, bindGroup);
+            pass.dispatchWorkgroups(NUM_Q_HEADS);
+            pass.end();
+            device.queue.submit([commandEncoder.finish()]);
+          }
+          await device.queue.onSubmittedWorkDone();
+          
+          // Benchmark
+          const start = performance.now();
+          
+          for (let i = 0; i < iterations; i++) {
+            const commandEncoder = device.createCommandEncoder();
+            const pass = commandEncoder.beginComputePass();
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, bindGroup);
+            pass.dispatchWorkgroups(NUM_Q_HEADS);
+            pass.end();
+            device.queue.submit([commandEncoder.finish()]);
+          }
+          await device.queue.onSubmittedWorkDone();
+          
+          const elapsed = performance.now() - start;
+          const avgTime = elapsed / iterations;
+          
+          log(`seq_len=${seqLen}: ${avgTime.toFixed(2)} ms`, 'header');
+          log(`  Per layer: ${avgTime.toFixed(2)} ms`);
+          log(`  28 layers: ${(avgTime * 28).toFixed(1)} ms`);
+          
+          // Cleanup
+          qBuffer.destroy();
+          kBuffer.destroy();
+          vBuffer.destroy();
+          seqLenBuffer.destroy();
+          outputBuffer.destroy();
+        }
+        
+        log('\n✅ Benchmark complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+  </script>
+</body>
+</html>

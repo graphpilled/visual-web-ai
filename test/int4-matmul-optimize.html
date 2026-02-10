@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>INT4 MatMul Optimization</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>INT4 MatMul Optimization for 7B</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    function quantizeToInt4(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const packed = new Uint32Array(N * packedK);
+      const scales = new Float32Array(N * numGroups);
+      // Random init
+      for (let i = 0; i < packed.length; i++) packed[i] = Math.random() * 0xFFFFFFFF >>> 0;
+      for (let i = 0; i < scales.length; i++) scales[i] = Math.random() * 0.1;
+      return { packed, scales, packedK, numGroups };
+    }
+
+    // Current kernel (baseline)
+    function createInt4V1(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[s_offset + group_idx];
+    let p0 = b_packed[b_offset + packed_idx];
+    let p1 = b_packed[b_offset + packed_idx + 1u];
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let w0 = vec4<f32>(
+      f32((p0 >>  0u) & 0xFu) - 8.0, f32((p0 >>  4u) & 0xFu) - 8.0,
+      f32((p0 >>  8u) & 0xFu) - 8.0, f32((p0 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w1 = vec4<f32>(
+      f32((p0 >> 16u) & 0xFu) - 8.0, f32((p0 >> 20u) & 0xFu) - 8.0,
+      f32((p0 >> 24u) & 0xFu) - 8.0, f32((p0 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    sum += dot(a0, w0) + dot(a1, w1);
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    let w2 = vec4<f32>(
+      f32((p1 >>  0u) & 0xFu) - 8.0, f32((p1 >>  4u) & 0xFu) - 8.0,
+      f32((p1 >>  8u) & 0xFu) - 8.0, f32((p1 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w3 = vec4<f32>(
+      f32((p1 >> 16u) & 0xFu) - 8.0, f32((p1 >> 20u) & 0xFu) - 8.0,
+      f32((p1 >> 24u) & 0xFu) - 8.0, f32((p1 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    sum += dot(a2, w2) + dot(a3, w3);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V2: Process 4 outputs per thread (better occupancy)
+    function createInt4V2(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col_base = gid.x * 4u;
+  if (col_base >= N) { return; }
+  
+  var sum0 = 0.0;
+  var sum1 = 0.0;
+  var sum2 = 0.0;
+  var sum3 = 0.0;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    
+    // Process 4 columns
+    for (var c = 0u; c < 4u; c++) {
+      let col = col_base + c;
+      if (col >= N) { break; }
+      
+      let b_offset = col * PACKED_K;
+      let s_offset = col * NUM_GROUPS;
+      let scale = scales[s_offset + group_idx];
+      
+      let p0 = b_packed[b_offset + packed_idx];
+      let p1 = b_packed[b_offset + packed_idx + 1u];
+      
+      let w0 = vec4<f32>(
+        f32((p0 >>  0u) & 0xFu) - 8.0, f32((p0 >>  4u) & 0xFu) - 8.0,
+        f32((p0 >>  8u) & 0xFu) - 8.0, f32((p0 >> 12u) & 0xFu) - 8.0
+      ) * scale;
+      let w1 = vec4<f32>(
+        f32((p0 >> 16u) & 0xFu) - 8.0, f32((p0 >> 20u) & 0xFu) - 8.0,
+        f32((p0 >> 24u) & 0xFu) - 8.0, f32((p0 >> 28u) & 0xFu) - 8.0
+      ) * scale;
+      let w2 = vec4<f32>(
+        f32((p1 >>  0u) & 0xFu) - 8.0, f32((p1 >>  4u) & 0xFu) - 8.0,
+        f32((p1 >>  8u) & 0xFu) - 8.0, f32((p1 >> 12u) & 0xFu) - 8.0
+      ) * scale;
+      let w3 = vec4<f32>(
+        f32((p1 >> 16u) & 0xFu) - 8.0, f32((p1 >> 20u) & 0xFu) - 8.0,
+        f32((p1 >> 24u) & 0xFu) - 8.0, f32((p1 >> 28u) & 0xFu) - 8.0
+      ) * scale;
+      
+      let partial = dot(a0, w0) + dot(a1, w1) + dot(a2, w2) + dot(a3, w3);
+      
+      if (c == 0u) { sum0 += partial; }
+      else if (c == 1u) { sum1 += partial; }
+      else if (c == 2u) { sum2 += partial; }
+      else { sum3 += partial; }
+    }
+  }
+  
+  output[col_base] = sum0;
+  if (col_base + 1u < N) { output[col_base + 1u] = sum1; }
+  if (col_base + 2u < N) { output[col_base + 2u] = sum2; }
+  if (col_base + 3u < N) { output[col_base + 3u] = sum3; }
+}`;
+    }
+
+    // V3: Larger group size (256 instead of 128) - fewer scale loads
+    function createInt4V3(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  
+  // Process 32 weights per group (4 packed u32s)
+  for (var g = 0u; g < NUM_GROUPS; g++) {
+    let scale = scales[s_offset + g];
+    let packed_start = g * (GROUP_SIZE / 8u);
+    
+    for (var p = 0u; p < GROUP_SIZE / 8u; p += 2u) {
+      let packed_idx = packed_start + p;
+      let k_base = packed_idx * 8u;
+      
+      let p0 = b_packed[b_offset + packed_idx];
+      let p1 = b_packed[b_offset + packed_idx + 1u];
+      let a0 = a[k_base / 4u];
+      let a1 = a[k_base / 4u + 1u];
+      let a2 = a[k_base / 4u + 2u];
+      let a3 = a[k_base / 4u + 3u];
+      
+      let w0 = vec4<f32>(
+        f32((p0 >>  0u) & 0xFu) - 8.0, f32((p0 >>  4u) & 0xFu) - 8.0,
+        f32((p0 >>  8u) & 0xFu) - 8.0, f32((p0 >> 12u) & 0xFu) - 8.0
+      ) * scale;
+      let w1 = vec4<f32>(
+        f32((p0 >> 16u) & 0xFu) - 8.0, f32((p0 >> 20u) & 0xFu) - 8.0,
+        f32((p0 >> 24u) & 0xFu) - 8.0, f32((p0 >> 28u) & 0xFu) - 8.0
+      ) * scale;
+      let w2 = vec4<f32>(
+        f32((p1 >>  0u) & 0xFu) - 8.0, f32((p1 >>  4u) & 0xFu) - 8.0,
+        f32((p1 >>  8u) & 0xFu) - 8.0, f32((p1 >> 12u) & 0xFu) - 8.0
+      ) * scale;
+      let w3 = vec4<f32>(
+        f32((p1 >> 16u) & 0xFu) - 8.0, f32((p1 >> 20u) & 0xFu) - 8.0,
+        f32((p1 >> 24u) & 0xFu) - 8.0, f32((p1 >> 28u) & 0xFu) - 8.0
+      ) * scale;
+      
+      sum += dot(a0, w0) + dot(a1, w1) + dot(a2, w2) + dot(a3, w3);
+    }
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V4: Preload activation into registers, process all groups
+    function createInt4V4(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const K4 = K / 4;
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const K = ${K}u;
+const N = ${N}u;
+const K4 = ${K4}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  
+  var packed_idx = 0u;
+  for (var g = 0u; g < NUM_GROUPS; g++) {
+    let scale = scales[s_offset + g];
+    
+    // Process GROUP_SIZE weights (GROUP_SIZE/8 packed u32s)
+    let packed_end = packed_idx + GROUP_SIZE / 8u;
+    
+    for (; packed_idx < packed_end; packed_idx += 2u) {
+      let k_base = packed_idx * 8u;
+      
+      let p0 = b_packed[b_offset + packed_idx];
+      let p1 = b_packed[b_offset + packed_idx + 1u];
+      
+      let a0 = a[k_base / 4u];
+      let a1 = a[k_base / 4u + 1u];
+      let a2 = a[k_base / 4u + 2u];
+      let a3 = a[k_base / 4u + 3u];
+      
+      sum += dot(a0, vec4<f32>(
+        f32((p0 >>  0u) & 0xFu) - 8.0, f32((p0 >>  4u) & 0xFu) - 8.0,
+        f32((p0 >>  8u) & 0xFu) - 8.0, f32((p0 >> 12u) & 0xFu) - 8.0
+      ) * scale);
+      sum += dot(a1, vec4<f32>(
+        f32((p0 >> 16u) & 0xFu) - 8.0, f32((p0 >> 20u) & 0xFu) - 8.0,
+        f32((p0 >> 24u) & 0xFu) - 8.0, f32((p0 >> 28u) & 0xFu) - 8.0
+      ) * scale);
+      sum += dot(a2, vec4<f32>(
+        f32((p1 >>  0u) & 0xFu) - 8.0, f32((p1 >>  4u) & 0xFu) - 8.0,
+        f32((p1 >>  8u) & 0xFu) - 8.0, f32((p1 >> 12u) & 0xFu) - 8.0
+      ) * scale);
+      sum += dot(a3, vec4<f32>(
+        f32((p1 >> 16u) & 0xFu) - 8.0, f32((p1 >> 20u) & 0xFu) - 8.0,
+        f32((p1 >> 24u) & 0xFu) - 8.0, f32((p1 >> 28u) & 0xFu) - 8.0
+      ) * scale);
+    }
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V5: Use shared memory for activation caching
+    function createInt4V5(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const K4 = K / 4;
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const K4 = ${K4}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+const WG_SIZE = 256u;
+
+var<workgroup> shared_a: array<vec4<f32>, ${K/4}>;
+
+@compute @workgroup_size(256)
+fn main(
+  @builtin(global_invocation_id) gid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(workgroup_id) wid: vec3<u32>
+) {
+  // Cooperatively load activation into shared memory
+  for (var i = lid.x; i < K4; i += WG_SIZE) {
+    shared_a[i] = a[i];
+  }
+  workgroupBarrier();
+  
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[s_offset + group_idx];
+    
+    let p0 = b_packed[b_offset + packed_idx];
+    let p1 = b_packed[b_offset + packed_idx + 1u];
+    
+    let a0 = shared_a[k_base / 4u];
+    let a1 = shared_a[k_base / 4u + 1u];
+    let a2 = shared_a[k_base / 4u + 2u];
+    let a3 = shared_a[k_base / 4u + 3u];
+    
+    let w0 = vec4<f32>(
+      f32((p0 >>  0u) & 0xFu) - 8.0, f32((p0 >>  4u) & 0xFu) - 8.0,
+      f32((p0 >>  8u) & 0xFu) - 8.0, f32((p0 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w1 = vec4<f32>(
+      f32((p0 >> 16u) & 0xFu) - 8.0, f32((p0 >> 20u) & 0xFu) - 8.0,
+      f32((p0 >> 24u) & 0xFu) - 8.0, f32((p0 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    let w2 = vec4<f32>(
+      f32((p1 >>  0u) & 0xFu) - 8.0, f32((p1 >>  4u) & 0xFu) - 8.0,
+      f32((p1 >>  8u) & 0xFu) - 8.0, f32((p1 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w3 = vec4<f32>(
+      f32((p1 >> 16u) & 0xFu) - 8.0, f32((p1 >> 20u) & 0xFu) - 8.0,
+      f32((p1 >> 24u) & 0xFu) - 8.0, f32((p1 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    
+    sum += dot(a0, w0) + dot(a1, w1) + dot(a2, w2) + dot(a3, w3);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    async function benchmark() {
+      log('=== INT4 MatMul Optimization ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      // Test configurations
+      const configs = [
+        { K: 4096, N: 4096, name: 'QKV proj [4096→4096]' },
+        { K: 4096, N: 11008, name: 'Gate/Up [4096→11008]' },
+        { K: 11008, N: 4096, name: 'Down [11008→4096]' },
+      ];
+      
+      const GROUP_SIZE = 128;
+      
+      async function benchShader(name, shaderFn, K, N, groupSize, workgroupDiv = 1) {
+        const q = quantizeToInt4(K, N, groupSize);
+        
+        const buffers = {
+          a: device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          packed: device.createBuffer({ size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          scales: device.createBuffer({ size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          output: device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE })
+        };
+        
+        device.queue.writeBuffer(buffers.a, 0, new Float32Array(K).fill(0.1));
+        device.queue.writeBuffer(buffers.packed, 0, q.packed);
+        device.queue.writeBuffer(buffers.scales, 0, q.scales);
+        
+        let shader;
+        try {
+          shader = shaderFn(K, N, groupSize);
+        } catch (e) {
+          return { time: null, error: e.message };
+        }
+        
+        let module;
+        try {
+          module = device.createShaderModule({ code: shader });
+        } catch (e) {
+          for (const buf of Object.values(buffers)) buf.destroy();
+          return { time: null, error: 'Shader compile error' };
+        }
+        
+        const pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+        
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: buffers.a } },
+            { binding: 1, resource: { buffer: buffers.packed } },
+            { binding: 2, resource: { buffer: buffers.scales } },
+            { binding: 3, resource: { buffer: buffers.output } }
+          ]
+        });
+        
+        const workgroups = Math.ceil(N / 256 / workgroupDiv);
+        const iterations = 50;
+        
+        // Warmup
+        for (let i = 0; i < 10; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Benchmark
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const time = (performance.now() - start) / iterations;
+        
+        // Cleanup
+        for (const buf of Object.values(buffers)) buf.destroy();
+        
+        // Calculate bandwidth
+        const bytes = K * 4 + q.packed.byteLength + q.scales.byteLength + N * 4;
+        const bw = bytes / (time / 1000) / 1e9;
+        
+        return { time, bw };
+      }
+      
+      for (const cfg of configs) {
+        log(`\n--- ${cfg.name} ---`, 'header');
+        
+        const v1 = await benchShader('V1', createInt4V1, cfg.K, cfg.N, GROUP_SIZE);
+        log(`V1 (current):      ${v1.time?.toFixed(2) || 'ERR'}ms | ${v1.bw?.toFixed(2) || '-'} GB/s`);
+        
+        const v2 = await benchShader('V2', createInt4V2, cfg.K, cfg.N, GROUP_SIZE, 4);
+        log(`V2 (4-out/thread): ${v2.time?.toFixed(2) || 'ERR'}ms | ${v2.bw?.toFixed(2) || '-'} GB/s`, 
+            v2.time && v2.time < v1.time ? 'pass' : '');
+        
+        const v3 = await benchShader('V3', createInt4V3, cfg.K, cfg.N, GROUP_SIZE);
+        log(`V3 (group-loop):   ${v3.time?.toFixed(2) || 'ERR'}ms | ${v3.bw?.toFixed(2) || '-'} GB/s`,
+            v3.time && v3.time < v1.time ? 'pass' : '');
+        
+        const v4 = await benchShader('V4', createInt4V4, cfg.K, cfg.N, GROUP_SIZE);
+        log(`V4 (unrolled):     ${v4.time?.toFixed(2) || 'ERR'}ms | ${v4.bw?.toFixed(2) || '-'} GB/s`,
+            v4.time && v4.time < v1.time ? 'pass' : '');
+        
+        // V5 only works if shared memory is big enough
+        if (cfg.K <= 4096) {
+          const v5 = await benchShader('V5', createInt4V5, cfg.K, cfg.N, GROUP_SIZE);
+          log(`V5 (shared mem):   ${v5.time?.toFixed(2) || 'ERR'}ms | ${v5.bw?.toFixed(2) || '-'} GB/s`,
+              v5.time && v5.time < v1.time ? 'pass' : '');
+        }
+        
+        // Find best
+        const times = [v1, v2, v3, v4].filter(r => r.time).map(r => r.time);
+        const best = Math.min(...times);
+        const speedup = v1.time / best;
+        log(`Best: ${best.toFixed(2)}ms (${speedup.toFixed(2)}x speedup)`, speedup > 1.1 ? 'pass' : '');
+      }
+      
+      log('\n=== OPTIMIZATION COMPLETE ===', 'pass');
+    }
+    
+    benchmark().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

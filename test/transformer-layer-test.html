@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Transformer Layer Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Transformer Layer INT4 Test</h1>
+  <p>Testing a single transformer decode step with INT4 weights</p>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    // Quantization helper
+    function quantizeToInt4(weights, K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const packed = new Uint32Array(N * packedK);
+      const scales = new Float32Array(N * numGroups);
+      
+      for (let col = 0; col < N; col++) {
+        for (let g = 0; g < numGroups; g++) {
+          const kStart = g * groupSize;
+          const kEnd = Math.min(kStart + groupSize, K);
+          let maxAbs = 0;
+          for (let k = kStart; k < kEnd; k++) {
+            maxAbs = Math.max(maxAbs, Math.abs(weights[k * N + col]));
+          }
+          scales[col * numGroups + g] = maxAbs > 0 ? maxAbs / 7.0 : 1.0;
+        }
+        for (let packedIdx = 0; packedIdx < packedK; packedIdx++) {
+          let packedVal = 0;
+          for (let sub = 0; sub < 8; sub++) {
+            const k = packedIdx * 8 + sub;
+            if (k >= K) break;
+            const groupIdx = Math.floor(k / groupSize);
+            const scale = scales[col * numGroups + groupIdx];
+            let int4Val = Math.round(weights[k * N + col] / scale) + 8;
+            int4Val = Math.max(0, Math.min(15, int4Val));
+            packedVal |= (int4Val << (sub * 4));
+          }
+          packed[col * packedK + packedIdx] = packedVal;
+        }
+      }
+      return { packed, scales, packedK, numGroups };
+    }
+
+    // INT4 MatMul shader generator
+    function createInt4MatMulShader(M, K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[s_offset + group_idx];
+    let p0 = b_packed[b_offset + packed_idx];
+    let p1 = b_packed[b_offset + packed_idx + 1u];
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let w0 = vec4<f32>(
+      f32((p0 >>  0u) & 0xFu) - 8.0, f32((p0 >>  4u) & 0xFu) - 8.0,
+      f32((p0 >>  8u) & 0xFu) - 8.0, f32((p0 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w1 = vec4<f32>(
+      f32((p0 >> 16u) & 0xFu) - 8.0, f32((p0 >> 20u) & 0xFu) - 8.0,
+      f32((p0 >> 24u) & 0xFu) - 8.0, f32((p0 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    sum += dot(a0, w0) + dot(a1, w1);
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    let w2 = vec4<f32>(
+      f32((p1 >>  0u) & 0xFu) - 8.0, f32((p1 >>  4u) & 0xFu) - 8.0,
+      f32((p1 >>  8u) & 0xFu) - 8.0, f32((p1 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w3 = vec4<f32>(
+      f32((p1 >> 16u) & 0xFu) - 8.0, f32((p1 >> 20u) & 0xFu) - 8.0,
+      f32((p1 >> 24u) & 0xFu) - 8.0, f32((p1 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    sum += dot(a2, w2) + dot(a3, w3);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // RMSNorm shader
+    function createRMSNormShader(N, eps = 1e-6) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const N = ${N}u;
+const EPS = ${eps};
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= N) { return; }
+  
+  // Compute RMS (simplified: single thread does reduction)
+  var sum_sq = 0.0;
+  for (var i = 0u; i < N; i++) {
+    sum_sq += input[i] * input[i];
+  }
+  let rms = sqrt(sum_sq / f32(N) + EPS);
+  
+  output[idx] = (input[idx] / rms) * weight[idx];
+}`;
+    }
+
+    // SiLU activation shader
+    function createSiLUShader(N) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+
+const N = ${N}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= N) { return; }
+  let x = input[idx];
+  output[idx] = x / (1.0 + exp(-x));
+}`;
+    }
+
+    // Element-wise multiply shader
+    function createMulShader(N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const N = ${N}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= N) { return; }
+  output[idx] = a[idx] * b[idx];
+}`;
+    }
+
+    // Add shader
+    function createAddShader(N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const N = ${N}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= N) { return; }
+  output[idx] = a[idx] + b[idx];
+}`;
+    }
+
+    async function runTransformerLayer() {
+      log('=== Transformer Layer INT4 Benchmark ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      log(`GPU: ${adapter.info?.vendor || 'unknown'}\n`);
+      
+      // Qwen-0.5B-like config (simplified)
+      const config = {
+        hidden_size: 1024,
+        intermediate_size: 2816,
+        num_heads: 16,
+        head_dim: 64,
+        group_size: 128
+      };
+      
+      const { hidden_size: D, intermediate_size: I, group_size } = config;
+      
+      log('Model config (Qwen-0.5B-like):', 'header');
+      log(`  hidden_size: ${D}`);
+      log(`  intermediate_size: ${I}`);
+      log(`  group_size: ${group_size}\n`);
+      
+      // Create random weights and quantize
+      log('Initializing weights...', 'info');
+      
+      const createQuantizedWeight = (K, N) => {
+        const fp32 = new Float32Array(K * N);
+        for (let i = 0; i < fp32.length; i++) fp32[i] = (Math.random() - 0.5) * 0.1;
+        return quantizeToInt4(fp32, K, N, group_size);
+      };
+      
+      // Weights for one transformer layer
+      const weights = {
+        // Attention
+        q_proj: createQuantizedWeight(D, D),
+        k_proj: createQuantizedWeight(D, D),
+        v_proj: createQuantizedWeight(D, D),
+        o_proj: createQuantizedWeight(D, D),
+        // FFN (SwiGLU)
+        gate_proj: createQuantizedWeight(D, I),
+        up_proj: createQuantizedWeight(D, I),
+        down_proj: createQuantizedWeight(I, D),
+        // Norms
+        input_norm: new Float32Array(D).fill(1),
+        post_attn_norm: new Float32Array(D).fill(1),
+      };
+      
+      // Calculate memory
+      const int4Mem = (
+        4 * (D * weights.q_proj.packedK * 4 + D * weights.q_proj.numGroups * 4) + // attn projs
+        2 * (I * weights.gate_proj.packedK * 4 + I * weights.gate_proj.numGroups * 4) + // gate, up
+        (D * weights.down_proj.packedK * 4 + D * weights.down_proj.numGroups * 4) + // down
+        2 * D * 4 // norms
+      ) / 1024 / 1024;
+      
+      const fp32Mem = (4 * D * D + 2 * D * I + I * D + 2 * D) * 4 / 1024 / 1024;
+      
+      log(`Memory: INT4=${int4Mem.toFixed(2)}MB vs FP32=${fp32Mem.toFixed(2)}MB (${(fp32Mem/int4Mem).toFixed(1)}x compression)\n`);
+      
+      // Create GPU buffers
+      const createBuffers = (w, K, N) => {
+        const packed = device.createBuffer({ size: w.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const scales = device.createBuffer({ size: w.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(packed, 0, w.packed);
+        device.queue.writeBuffer(scales, 0, w.scales);
+        return { packed, scales, packedK: w.packedK, numGroups: w.numGroups };
+      };
+      
+      const gpuWeights = {
+        q_proj: createBuffers(weights.q_proj, D, D),
+        k_proj: createBuffers(weights.k_proj, D, D),
+        v_proj: createBuffers(weights.v_proj, D, D),
+        o_proj: createBuffers(weights.o_proj, D, D),
+        gate_proj: createBuffers(weights.gate_proj, D, I),
+        up_proj: createBuffers(weights.up_proj, D, I),
+        down_proj: createBuffers(weights.down_proj, I, D),
+      };
+      
+      // Activation buffers
+      const hidden = device.createBuffer({ size: D * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const temp1 = device.createBuffer({ size: Math.max(D, I) * 4, usage: GPUBufferUsage.STORAGE });
+      const temp2 = device.createBuffer({ size: Math.max(D, I) * 4, usage: GPUBufferUsage.STORAGE });
+      const temp3 = device.createBuffer({ size: I * 4, usage: GPUBufferUsage.STORAGE });
+      const output = device.createBuffer({ size: D * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      
+      const normWeight = device.createBuffer({ size: D * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(normWeight, 0, weights.input_norm);
+      
+      // Initialize hidden state
+      const hiddenData = new Float32Array(D);
+      for (let i = 0; i < D; i++) hiddenData[i] = Math.random() - 0.5;
+      device.queue.writeBuffer(hidden, 0, hiddenData);
+      
+      // Compile pipelines
+      const compilePipeline = (shader) => {
+        const module = device.createShaderModule({ code: shader });
+        return device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+      };
+      
+      const pipelines = {
+        matmul_D_D: compilePipeline(createInt4MatMulShader(1, D, D, group_size)),
+        matmul_D_I: compilePipeline(createInt4MatMulShader(1, D, I, group_size)),
+        matmul_I_D: compilePipeline(createInt4MatMulShader(1, I, D, group_size)),
+        silu: compilePipeline(createSiLUShader(I)),
+        mul: compilePipeline(createMulShader(I)),
+        add: compilePipeline(createAddShader(D)),
+      };
+      
+      // Create bind groups for each operation
+      const createMatMulBindGroup = (pipeline, input, w, outBuf) => {
+        return device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: input } },
+            { binding: 1, resource: { buffer: w.packed } },
+            { binding: 2, resource: { buffer: w.scales } },
+            { binding: 3, resource: { buffer: outBuf } }
+          ]
+        });
+      };
+      
+      // Benchmark one forward pass
+      log('--- Benchmarking Forward Pass ---\n', 'header');
+      
+      const runForwardPass = () => {
+        const encoder = device.createCommandEncoder();
+        
+        // Simplified forward pass (skipping attention mechanism, just testing projections)
+        // Q projection: hidden -> temp1
+        let pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.matmul_D_D);
+        pass.setBindGroup(0, createMatMulBindGroup(pipelines.matmul_D_D, hidden, gpuWeights.q_proj, temp1));
+        pass.dispatchWorkgroups(Math.ceil(D / 256));
+        pass.end();
+        
+        // K projection: hidden -> temp2 (in real impl, this would be cached)
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.matmul_D_D);
+        pass.setBindGroup(0, createMatMulBindGroup(pipelines.matmul_D_D, hidden, gpuWeights.k_proj, temp2));
+        pass.dispatchWorkgroups(Math.ceil(D / 256));
+        pass.end();
+        
+        // V projection: hidden -> temp1 (reusing temp1, simplified)
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.matmul_D_D);
+        pass.setBindGroup(0, createMatMulBindGroup(pipelines.matmul_D_D, hidden, gpuWeights.v_proj, temp1));
+        pass.dispatchWorkgroups(Math.ceil(D / 256));
+        pass.end();
+        
+        // O projection: temp1 -> temp2
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.matmul_D_D);
+        pass.setBindGroup(0, createMatMulBindGroup(pipelines.matmul_D_D, temp1, gpuWeights.o_proj, temp2));
+        pass.dispatchWorkgroups(Math.ceil(D / 256));
+        pass.end();
+        
+        // Residual add: hidden + temp2 -> output
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.add);
+        pass.setBindGroup(0, device.createBindGroup({
+          layout: pipelines.add.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: hidden } },
+            { binding: 1, resource: { buffer: temp2 } },
+            { binding: 2, resource: { buffer: output } }
+          ]
+        }));
+        pass.dispatchWorkgroups(Math.ceil(D / 256));
+        pass.end();
+        
+        // FFN: gate_proj (output -> temp1)
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.matmul_D_I);
+        pass.setBindGroup(0, createMatMulBindGroup(pipelines.matmul_D_I, output, gpuWeights.gate_proj, temp1));
+        pass.dispatchWorkgroups(Math.ceil(I / 256));
+        pass.end();
+        
+        // FFN: up_proj (output -> temp2)
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.matmul_D_I);
+        pass.setBindGroup(0, createMatMulBindGroup(pipelines.matmul_D_I, output, gpuWeights.up_proj, temp2));
+        pass.dispatchWorkgroups(Math.ceil(I / 256));
+        pass.end();
+        
+        // SiLU on gate (temp1 -> temp3)
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.silu);
+        pass.setBindGroup(0, device.createBindGroup({
+          layout: pipelines.silu.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: temp1 } },
+            { binding: 1, resource: { buffer: temp3 } }
+          ]
+        }));
+        pass.dispatchWorkgroups(Math.ceil(I / 256));
+        pass.end();
+        
+        // Multiply gate * up (temp3 * temp2 -> temp1)
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.mul);
+        pass.setBindGroup(0, device.createBindGroup({
+          layout: pipelines.mul.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: temp3 } },
+            { binding: 1, resource: { buffer: temp2 } },
+            { binding: 2, resource: { buffer: temp1 } }
+          ]
+        }));
+        pass.dispatchWorkgroups(Math.ceil(I / 256));
+        pass.end();
+        
+        // down_proj (temp1 -> temp2)
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.matmul_I_D);
+        pass.setBindGroup(0, createMatMulBindGroup(pipelines.matmul_I_D, temp1, gpuWeights.down_proj, temp2));
+        pass.dispatchWorkgroups(Math.ceil(D / 256));
+        pass.end();
+        
+        // Final residual add: output + temp2 -> hidden (for next layer)
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.add);
+        pass.setBindGroup(0, device.createBindGroup({
+          layout: pipelines.add.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: output } },
+            { binding: 1, resource: { buffer: temp2 } },
+            { binding: 2, resource: { buffer: hidden } }
+          ]
+        }));
+        pass.dispatchWorkgroups(Math.ceil(D / 256));
+        pass.end();
+        
+        device.queue.submit([encoder.finish()]);
+      };
+      
+      // Warmup
+      for (let i = 0; i < 10; i++) {
+        runForwardPass();
+      }
+      await device.queue.onSubmittedWorkDone();
+      
+      // Benchmark
+      const iterations = 50;
+      const start = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        runForwardPass();
+      }
+      await device.queue.onSubmittedWorkDone();
+      const elapsed = (performance.now() - start) / iterations;
+      
+      log(`Single layer forward pass: ${elapsed.toFixed(2)}ms`, elapsed < 10 ? 'pass' : 'warn');
+      
+      // Project to full model
+      const numLayers = 24;
+      const fullModelTime = elapsed * numLayers;
+      const tokensPerSec = 1000 / fullModelTime;
+      
+      log(`\n--- Full Model Projection (${numLayers} layers) ---`, 'header');
+      log(`Estimated time per token: ${fullModelTime.toFixed(1)}ms`);
+      log(`Estimated tokens/sec: ${tokensPerSec.toFixed(2)}`, tokensPerSec > 1 ? 'pass' : 'warn');
+      
+      // Breakdown
+      log('\n--- Operation Breakdown ---', 'header');
+      
+      const timeOp = async (name, pipeline, bindGroup, workgroups) => {
+        for (let i = 0; i < 10; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        const start = performance.now();
+        for (let i = 0; i < 50; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        return (performance.now() - start) / 50;
+      };
+      
+      const qTime = await timeOp('Q proj', pipelines.matmul_D_D, 
+        createMatMulBindGroup(pipelines.matmul_D_D, hidden, gpuWeights.q_proj, temp1),
+        Math.ceil(D / 256));
+      log(`  Q/K/V/O proj (${D}x${D}): ${qTime.toFixed(2)}ms each`);
+      
+      const gateTime = await timeOp('Gate proj', pipelines.matmul_D_I,
+        createMatMulBindGroup(pipelines.matmul_D_I, output, gpuWeights.gate_proj, temp1),
+        Math.ceil(I / 256));
+      log(`  Gate/Up proj (${D}x${I}): ${gateTime.toFixed(2)}ms each`);
+      
+      const downTime = await timeOp('Down proj', pipelines.matmul_I_D,
+        createMatMulBindGroup(pipelines.matmul_I_D, temp1, gpuWeights.down_proj, temp2),
+        Math.ceil(D / 256));
+      log(`  Down proj (${I}x${D}): ${downTime.toFixed(2)}ms`);
+      
+      log('\n=== TEST COMPLETE ===', 'pass');
+    }
+    
+    runTransformerLayer().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

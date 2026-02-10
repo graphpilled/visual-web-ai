@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>LM Head Isolated Benchmark</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+    button:disabled { background: #666; cursor: not-allowed; }
+    .results { margin-top: 20px; }
+    .result-row { padding: 5px 0; }
+  </style>
+</head>
+<body>
+  <h1>🔬 LM Head Isolated Benchmark</h1>
+  <p>Test each version in isolation with proper cleanup between runs.</p>
+  
+  <div>
+    <button onclick="testOriginal()">Test Original</button>
+    <button onclick="testV4_64()">Test V4 (b=64)</button>
+    <button onclick="testV4_256()">Test V4 (b=256)</button>
+    <button onclick="testVec4()">Test Vec4</button>
+    <button onclick="clearResults()">Clear Results</button>
+  </div>
+  
+  <div class="results">
+    <h3>Results (run each test separately, wait for completion):</h3>
+    <div id="results"></div>
+  </div>
+  
+  <pre id="output"></pre>
+
+  <script src="lm-head.js"></script>
+  <script src="lm-head-v4.js"></script>
+  <script>
+    let device = null;
+    const results = {};
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clearLog = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+    
+    const clearResults = () => {
+      document.getElementById('results').innerHTML = '';
+      document.getElementById('output').innerHTML = '';
+      Object.keys(results).forEach(k => delete results[k]);
+    };
+    
+    const updateResults = () => {
+      const div = document.getElementById('results');
+      const sorted = Object.entries(results).sort((a, b) => a[1] - b[1]);
+      const fastest = sorted.length > 0 ? sorted[0][1] : 1;
+      
+      div.innerHTML = sorted.map(([name, time]) => {
+        const speedup = (fastest / time).toFixed(2);
+        const star = time === fastest ? ' ⭐' : '';
+        return `<div class="result-row">${name.padEnd(20)} ${time.toFixed(2)} ms${star}</div>`;
+      }).join('');
+    };
+
+    const TEST_VOCAB_SIZE = 32000;
+    const TEST_HIDDEN_SIZE = 3584;
+
+    function f32ToF16(f32) {
+      const f32View = new Float32Array([f32]);
+      const u32View = new Uint32Array(f32View.buffer);
+      const f32Bits = u32View[0];
+      const sign = (f32Bits >> 16) & 0x8000;
+      const exp = ((f32Bits >> 23) & 0xFF) - 127 + 15;
+      const mantissa = (f32Bits >> 13) & 0x3FF;
+      if (exp <= 0) return sign;
+      if (exp >= 31) return sign | 0x7C00;
+      return sign | (exp << 10) | mantissa;
+    }
+    
+    function packF16Pair(f16Low, f16High) {
+      return (f16High << 16) | f16Low;
+    }
+
+    function createTestWeights(vocabSize, hiddenSize) {
+      const packedSize = vocabSize * (hiddenSize / 2);
+      const weights = new Uint32Array(packedSize);
+      for (let v = 0; v < vocabSize; v++) {
+        const w = (v + 1) / vocabSize;
+        for (let d = 0; d < hiddenSize / 2; d++) {
+          const f16 = f32ToF16(w / hiddenSize);
+          weights[v * (hiddenSize / 2) + d] = packF16Pair(f16, f16);
+        }
+      }
+      return weights;
+    }
+
+    async function initWebGPU() {
+      // Always create fresh device
+      if (!navigator.gpu) throw new Error('WebGPU not supported');
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error('No GPU adapter');
+      device = await adapter.requestDevice({
+        requiredLimits: {
+          maxComputeWorkgroupsPerDimension: 65535,
+          maxStorageBufferBindingSize: 2 * 1024 * 1024 * 1024,
+        }
+      });
+      return device;
+    }
+
+    async function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async function runIsolatedBenchmark(name, createLMHead) {
+      clearLog();
+      log(`=== ${name} Isolated Benchmark ===\n`, 'header');
+      
+      const vocabSize = TEST_VOCAB_SIZE;
+      const hiddenSize = TEST_HIDDEN_SIZE;
+      const iterations = 100;
+      const warmupIterations = 20;
+      
+      try {
+        // Fresh WebGPU device
+        log('Initializing fresh WebGPU device...', 'info');
+        await initWebGPU();
+        log('✅ WebGPU initialized\n', 'pass');
+        
+        log(`Config: vocab=${vocabSize}, hidden=${hiddenSize}`, 'info');
+        log(`Warmup: ${warmupIterations}, Benchmark: ${iterations}\n`);
+        
+        // Create weights
+        log('Creating weights...', 'info');
+        const weights = createTestWeights(vocabSize, hiddenSize);
+        const weightBuffer = device.createBuffer({
+          size: weights.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Uint32Array(weightBuffer.getMappedRange()).set(weights);
+        weightBuffer.unmap();
+        
+        const hiddenBuffer = device.createBuffer({
+          size: hiddenSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+        
+        // Create LM Head
+        log('Creating LM Head...', 'info');
+        const lmHead = createLMHead(device, vocabSize, hiddenSize);
+        lmHead.setWeightBuffer(weightBuffer);
+        await lmHead.init();
+        
+        // Warmup
+        log(`\nWarmup (${warmupIterations} iterations)...`, 'info');
+        for (let i = 0; i < warmupIterations; i++) {
+          lmHead.forward(hiddenBuffer);
+          await device.queue.onSubmittedWorkDone();
+        }
+        
+        // Cooldown
+        log('Cooldown (500ms)...', 'info');
+        await sleep(500);
+        
+        // Benchmark
+        log(`\nBenchmarking (${iterations} iterations)...`, 'info');
+        const times = [];
+        
+        for (let i = 0; i < iterations; i++) {
+          const start = performance.now();
+          lmHead.forward(hiddenBuffer);
+          await device.queue.onSubmittedWorkDone();
+          const elapsed = performance.now() - start;
+          times.push(elapsed);
+          
+          // Progress
+          if ((i + 1) % 25 === 0) {
+            log(`  ${i + 1}/${iterations} done...`);
+          }
+        }
+        
+        // Calculate statistics
+        times.sort((a, b) => a - b);
+        const min = times[0];
+        const max = times[times.length - 1];
+        const median = times[Math.floor(times.length / 2)];
+        const avg = times.reduce((a, b) => a + b, 0) / times.length;
+        const p95 = times[Math.floor(times.length * 0.95)];
+        
+        // Remove outliers (top/bottom 10%) for stable average
+        const trimmed = times.slice(
+          Math.floor(times.length * 0.1),
+          Math.floor(times.length * 0.9)
+        );
+        const trimmedAvg = trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
+        
+        log(`\n--- Results for ${name} ---`, 'header');
+        log(`  Min:     ${min.toFixed(2)} ms`);
+        log(`  Max:     ${max.toFixed(2)} ms`);
+        log(`  Median:  ${median.toFixed(2)} ms`);
+        log(`  Average: ${avg.toFixed(2)} ms`);
+        log(`  P95:     ${p95.toFixed(2)} ms`);
+        log(`  Trimmed avg (10-90%): ${trimmedAvg.toFixed(2)} ms`, 'pass');
+        
+        // Store result
+        results[name] = trimmedAvg;
+        updateResults();
+        
+        // Cleanup
+        log('\nCleaning up...', 'info');
+        lmHead.destroy();
+        hiddenBuffer.destroy();
+        weightBuffer.destroy();
+        device.destroy();
+        device = null;
+        
+        // Force GC if available
+        if (window.gc) window.gc();
+        
+        log('\n✅ Benchmark complete!', 'pass');
+        log('\nℹ️ Wait a few seconds before running the next test for accurate comparison.', 'info');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function testOriginal() {
+      await runIsolatedBenchmark('Original', (device, vocabSize, hiddenSize) => {
+        return new LMHead(device, vocabSize, hiddenSize);
+      });
+    }
+
+    async function testV4_64() {
+      await runIsolatedBenchmark('V4 (b=64)', (device, vocabSize, hiddenSize) => {
+        return new LMHeadV4(device, vocabSize, hiddenSize, { batchSize: 64 });
+      });
+    }
+
+    async function testV4_256() {
+      await runIsolatedBenchmark('V4 (b=256)', (device, vocabSize, hiddenSize) => {
+        return new LMHeadV4(device, vocabSize, hiddenSize, { batchSize: 256 });
+      });
+    }
+
+    async function testVec4() {
+      await runIsolatedBenchmark('Vec4', (device, vocabSize, hiddenSize) => {
+        return new LMHeadVec4(device, vocabSize, hiddenSize);
+      });
+    }
+  </script>
+</body>
+</html>

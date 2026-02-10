@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RoPE Kernel Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+  </style>
+</head>
+<body>
+  <h1>🔄 RoPE Kernel Test</h1>
+  <p>Tests Rotary Position Embedding for Qwen2.5 inference.</p>
+  <button onclick="runTests()">Run All Tests</button>
+  <button onclick="runBenchmark()">Run Benchmark</button>
+  <pre id="output"></pre>
+
+  <script>
+    let device = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+
+    // Qwen2.5-7B config
+    const NUM_Q_HEADS = 28;
+    const NUM_KV_HEADS = 4;
+    const HEAD_DIM = 128;
+    const ROPE_THETA = 1000000.0;
+
+    // Reference CPU implementation
+    function ropeCPU(q, k, position, numQHeads, numKVHeads, headDim, ropeTheta) {
+      const halfDim = headDim / 2;
+      const qOut = new Float32Array(q);
+      const kOut = new Float32Array(k);
+      
+      // Process Q
+      for (let head = 0; head < numQHeads; head++) {
+        for (let pair = 0; pair < halfDim; pair++) {
+          const freq = 1.0 / Math.pow(ropeTheta, (2 * pair) / headDim);
+          const angle = position * freq;
+          const cosVal = Math.cos(angle);
+          const sinVal = Math.sin(angle);
+          
+          const baseIdx = head * headDim + pair * 2;
+          const q0 = q[baseIdx];
+          const q1 = q[baseIdx + 1];
+          
+          qOut[baseIdx] = q0 * cosVal - q1 * sinVal;
+          qOut[baseIdx + 1] = q0 * sinVal + q1 * cosVal;
+        }
+      }
+      
+      // Process K
+      for (let head = 0; head < numKVHeads; head++) {
+        for (let pair = 0; pair < halfDim; pair++) {
+          const freq = 1.0 / Math.pow(ropeTheta, (2 * pair) / headDim);
+          const angle = position * freq;
+          const cosVal = Math.cos(angle);
+          const sinVal = Math.sin(angle);
+          
+          const baseIdx = head * headDim + pair * 2;
+          const k0 = k[baseIdx];
+          const k1 = k[baseIdx + 1];
+          
+          kOut[baseIdx] = k0 * cosVal - k1 * sinVal;
+          kOut[baseIdx + 1] = k0 * sinVal + k1 * cosVal;
+        }
+      }
+      
+      return { q: qOut, k: kOut };
+    }
+
+    // Generate RoPE WGSL shader
+    function genRoPEShader(numQHeads, numKVHeads, headDim, ropeTheta) {
+      const halfDim = headDim / 2;
+      const wgSize = 256;
+      
+      return `
+@group(0) @binding(0) var<storage, read_write> q: array<f32>;
+@group(0) @binding(1) var<storage, read_write> k: array<f32>;
+@group(0) @binding(2) var<storage, read> position: array<u32>;
+
+const NUM_Q_HEADS = ${numQHeads}u;
+const NUM_KV_HEADS = ${numKVHeads}u;
+const HEAD_DIM = ${headDim}u;
+const HALF_DIM = ${halfDim}u;
+const ROPE_THETA = ${ropeTheta};
+
+@compute @workgroup_size(${wgSize})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  let pos = f32(position[0]);
+  
+  // Process Q heads
+  if (idx < NUM_Q_HEADS * HALF_DIM) {
+    let head = idx / HALF_DIM;
+    let pair = idx % HALF_DIM;
+    
+    // Compute rotation angle: θ = pos * (base ^ (-2*pair / dim))
+    let freq = 1.0 / pow(ROPE_THETA, f32(2u * pair) / f32(HEAD_DIM));
+    let angle = pos * freq;
+    let cos_val = cos(angle);
+    let sin_val = sin(angle);
+    
+    // Get indices into q array
+    let base_idx = head * HEAD_DIM + pair * 2u;
+    let q0 = q[base_idx];
+    let q1 = q[base_idx + 1u];
+    
+    // Apply rotation
+    q[base_idx] = q0 * cos_val - q1 * sin_val;
+    q[base_idx + 1u] = q0 * sin_val + q1 * cos_val;
+  }
+  
+  // Process K heads (fewer heads due to GQA)
+  if (idx < NUM_KV_HEADS * HALF_DIM) {
+    let head = idx / HALF_DIM;
+    let pair = idx % HALF_DIM;
+    
+    let freq = 1.0 / pow(ROPE_THETA, f32(2u * pair) / f32(HEAD_DIM));
+    let angle = pos * freq;
+    let cos_val = cos(angle);
+    let sin_val = sin(angle);
+    
+    let base_idx = head * HEAD_DIM + pair * 2u;
+    let k0 = k[base_idx];
+    let k1 = k[base_idx + 1u];
+    
+    k[base_idx] = k0 * cos_val - k1 * sin_val;
+    k[base_idx + 1u] = k0 * sin_val + k1 * cos_val;
+  }
+}`;
+    }
+
+    async function initWebGPU() {
+      if (device) return device;
+      
+      if (!navigator.gpu) {
+        throw new Error('WebGPU not supported');
+      }
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        throw new Error('No GPU adapter found');
+      }
+      
+      device = await adapter.requestDevice();
+      log('✅ WebGPU initialized', 'pass');
+      return device;
+    }
+
+    async function createRoPEPipeline(numQHeads, numKVHeads, headDim, ropeTheta) {
+      const shader = genRoPEShader(numQHeads, numKVHeads, headDim, ropeTheta);
+      
+      const shaderModule = device.createShaderModule({ code: shader });
+      
+      const pipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: {
+          module: shaderModule,
+          entryPoint: 'main'
+        }
+      });
+      
+      return pipeline;
+    }
+
+    async function runRoPE(pipeline, q, k, position, numQHeads, numKVHeads, headDim) {
+      const qSize = numQHeads * headDim;
+      const kSize = numKVHeads * headDim;
+      
+      const qBuffer = device.createBuffer({
+        size: qSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true
+      });
+      new Float32Array(qBuffer.getMappedRange()).set(q);
+      qBuffer.unmap();
+      
+      const kBuffer = device.createBuffer({
+        size: kSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true
+      });
+      new Float32Array(kBuffer.getMappedRange()).set(k);
+      kBuffer.unmap();
+      
+      const posBuffer = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+      });
+      new Uint32Array(posBuffer.getMappedRange()).set([position]);
+      posBuffer.unmap();
+      
+      const qReadBuffer = device.createBuffer({
+        size: qSize * 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+      });
+      
+      const kReadBuffer = device.createBuffer({
+        size: kSize * 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+      });
+      
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: qBuffer } },
+          { binding: 1, resource: { buffer: kBuffer } },
+          { binding: 2, resource: { buffer: posBuffer } }
+        ]
+      });
+      
+      const halfDim = headDim / 2;
+      const maxWork = Math.max(numQHeads, numKVHeads) * halfDim;
+      const workgroups = Math.ceil(maxWork / 256);
+      
+      const commandEncoder = device.createCommandEncoder();
+      const pass = commandEncoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(workgroups);
+      pass.end();
+      
+      commandEncoder.copyBufferToBuffer(qBuffer, 0, qReadBuffer, 0, qSize * 4);
+      commandEncoder.copyBufferToBuffer(kBuffer, 0, kReadBuffer, 0, kSize * 4);
+      device.queue.submit([commandEncoder.finish()]);
+      
+      await qReadBuffer.mapAsync(GPUMapMode.READ);
+      await kReadBuffer.mapAsync(GPUMapMode.READ);
+      
+      const qResult = new Float32Array(qReadBuffer.getMappedRange().slice(0));
+      const kResult = new Float32Array(kReadBuffer.getMappedRange().slice(0));
+      
+      qReadBuffer.unmap();
+      kReadBuffer.unmap();
+      
+      // Cleanup
+      qBuffer.destroy();
+      kBuffer.destroy();
+      posBuffer.destroy();
+      qReadBuffer.destroy();
+      kReadBuffer.destroy();
+      
+      return { q: qResult, k: kResult };
+    }
+
+    function compareArrays(a, b, tolerance = 1e-3) {
+      if (a.length !== b.length) return { match: false, maxDiff: Infinity };
+      let maxDiff = 0;
+      let maxIdx = 0;
+      for (let i = 0; i < a.length; i++) {
+        const diff = Math.abs(a[i] - b[i]);
+        if (diff > maxDiff) {
+          maxDiff = diff;
+          maxIdx = i;
+        }
+      }
+      return { match: maxDiff <= tolerance, maxDiff, maxIdx };
+    }
+
+    async function runTests() {
+      clear();
+      log('=== RoPE Kernel Tests ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        log(`\nQwen2.5-7B Config:`, 'info');
+        log(`  Q heads: ${NUM_Q_HEADS}`);
+        log(`  KV heads: ${NUM_KV_HEADS}`);
+        log(`  Head dim: ${HEAD_DIM}`);
+        log(`  RoPE theta: ${ROPE_THETA}`);
+        
+        const pipeline = await createRoPEPipeline(NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM, ROPE_THETA);
+        
+        const testPositions = [0, 1, 10, 100, 1000, 10000];
+        
+        for (const pos of testPositions) {
+          log(`\nTest: Position ${pos}`, 'header');
+          
+          // Create random Q and K
+          const qSize = NUM_Q_HEADS * HEAD_DIM;
+          const kSize = NUM_KV_HEADS * HEAD_DIM;
+          
+          const q = new Float32Array(qSize);
+          const k = new Float32Array(kSize);
+          
+          for (let i = 0; i < qSize; i++) q[i] = (Math.random() - 0.5) * 2;
+          for (let i = 0; i < kSize; i++) k[i] = (Math.random() - 0.5) * 2;
+          
+          // CPU reference
+          const expected = ropeCPU(q, k, pos, NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM, ROPE_THETA);
+          
+          // GPU result
+          const actual = await runRoPE(pipeline, q, k, pos, NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM);
+          
+          // Compare Q
+          const qResult = compareArrays(expected.q, actual.q);
+          log(`  Q: ${qResult.match ? '✅ PASS' : '❌ FAIL'} (max diff: ${qResult.maxDiff.toExponential(2)})`, 
+              qResult.match ? 'pass' : 'fail');
+          
+          // Compare K
+          const kResult = compareArrays(expected.k, actual.k);
+          log(`  K: ${kResult.match ? '✅ PASS' : '❌ FAIL'} (max diff: ${kResult.maxDiff.toExponential(2)})`, 
+              kResult.match ? 'pass' : 'fail');
+        }
+        
+        // Test known values
+        log('\n\nTest: Known Values (simple rotation)', 'header');
+        const simpleQ = new Float32Array(NUM_Q_HEADS * HEAD_DIM).fill(0);
+        const simpleK = new Float32Array(NUM_KV_HEADS * HEAD_DIM).fill(0);
+        
+        // Set first pair to [1, 0] - should rotate by angle
+        simpleQ[0] = 1.0; simpleQ[1] = 0.0;
+        simpleK[0] = 1.0; simpleK[1] = 0.0;
+        
+        const pos = 1;
+        const freq = 1.0 / Math.pow(ROPE_THETA, 0);  // First frequency = 1
+        const angle = pos * freq;
+        
+        const result = await runRoPE(pipeline, simpleQ, simpleK, pos, NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM);
+        
+        log(`  Input Q[0:2]: [1.0, 0.0]`);
+        log(`  Position: ${pos}, Angle: ${angle.toFixed(6)}`);
+        log(`  Expected: [cos(${angle.toFixed(4)}), sin(${angle.toFixed(4)})] = [${Math.cos(angle).toFixed(6)}, ${Math.sin(angle).toFixed(6)}]`);
+        log(`  Actual Q[0:2]: [${result.q[0].toFixed(6)}, ${result.q[1].toFixed(6)}]`);
+        
+        const knownMatch = Math.abs(result.q[0] - Math.cos(angle)) < 1e-5 && 
+                          Math.abs(result.q[1] - Math.sin(angle)) < 1e-5;
+        log(`  ${knownMatch ? '✅ PASS' : '❌ FAIL'}`, knownMatch ? 'pass' : 'fail');
+        
+        log('\n✅ All tests complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runBenchmark() {
+      clear();
+      log('=== RoPE Benchmark ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        const iterations = 1000;
+        
+        log(`Config: ${NUM_Q_HEADS} Q heads, ${NUM_KV_HEADS} KV heads, ${HEAD_DIM} head dim`, 'info');
+        log(`Iterations: ${iterations}\n`);
+        
+        const pipeline = await createRoPEPipeline(NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM, ROPE_THETA);
+        
+        const qSize = NUM_Q_HEADS * HEAD_DIM;
+        const kSize = NUM_KV_HEADS * HEAD_DIM;
+        
+        // Create persistent buffers
+        const qBuffer = device.createBuffer({
+          size: qSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+        
+        const kBuffer = device.createBuffer({
+          size: kSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+        
+        const posBuffer = device.createBuffer({
+          size: 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+        
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: qBuffer } },
+            { binding: 1, resource: { buffer: kBuffer } },
+            { binding: 2, resource: { buffer: posBuffer } }
+          ]
+        });
+        
+        const halfDim = HEAD_DIM / 2;
+        const maxWork = Math.max(NUM_Q_HEADS, NUM_KV_HEADS) * halfDim;
+        const workgroups = Math.ceil(maxWork / 256);
+        
+        // Warmup
+        for (let i = 0; i < 10; i++) {
+          const commandEncoder = device.createCommandEncoder();
+          const pass = commandEncoder.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([commandEncoder.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Benchmark
+        const start = performance.now();
+        
+        for (let i = 0; i < iterations; i++) {
+          const commandEncoder = device.createCommandEncoder();
+          const pass = commandEncoder.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([commandEncoder.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        const elapsed = performance.now() - start;
+        const avgTime = elapsed / iterations;
+        
+        // Memory: Q (read+write) + K (read+write) = (qSize + kSize) * 2 * 4 bytes
+        const bytesPerOp = (qSize + kSize) * 2 * 4;
+        const bandwidth = (bytesPerOp / avgTime) / 1e6; // GB/s
+        
+        log(`Results:`, 'header');
+        log(`  Total time: ${elapsed.toFixed(2)} ms`);
+        log(`  Average time: ${(avgTime * 1000).toFixed(2)} µs`);
+        log(`  Throughput: ${(1000 / avgTime).toFixed(0)} ops/sec`);
+        log(`  Memory: ${(bytesPerOp / 1024).toFixed(1)} KB per op`);
+        log(`  Bandwidth: ${bandwidth.toFixed(2)} GB/s`);
+        
+        log(`\n📊 Context:`, 'info');
+        log(`  RoPE runs once per layer (28 total)`);
+        log(`  At ${(avgTime * 1000).toFixed(2)} µs each = ${(avgTime * 28).toFixed(2)} ms total`);
+        
+        // Cleanup
+        qBuffer.destroy();
+        kBuffer.destroy();
+        posBuffer.destroy();
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+  </script>
+</body>
+</html>

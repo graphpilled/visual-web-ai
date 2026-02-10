@@ -1,0 +1,22 @@
+{
+  "name": "visual-web-ai",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "res:build": "rescript",
+    "res:dev": "rescript -w",
+    "bundle": "esbuild src/bridge.js --bundle --format=esm --outfile=dist/bundle.js",
+    "build": "npm run res:build && npm run bundle"
+  },
+  "dependencies": {
+    "rescript": "^12.0.2"
+  },
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

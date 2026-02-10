@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Qwen2.5 Weight Loader V3 (Direct GPU)</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; max-height: 600px; overflow-y: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    .progress { color: #94a3b8; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+    button:disabled { background: #666; cursor: not-allowed; }
+    .file-info { background: #1e293b; padding: 10px; border-radius: 5px; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h1>🚀 Qwen2.5 Weight Loader V3</h1>
+  <p>Streams weights directly to GPU - minimal CPU memory usage</p>
+  
+  <div>
+    <p>Select safetensors files from Qwen2.5-7B-Instruct-GPTQ-Int4:</p>
+    <input type="file" id="fileInput" multiple accept=".safetensors" />
+    <div id="fileInfo" class="file-info" style="display: none;"></div>
+    <br>
+    <button id="analyzeBtn" onclick="analyzeModel()">1. Analyze Model</button>
+    <button id="loadBtn" onclick="loadToGPU()" disabled>2. Load to GPU</button>
+    <button id="testBtn" onclick="testInference()" disabled>3. Test Inference</button>
+  </div>
+  
+  <pre id="output"></pre>
+  
+  <script src="weight-loader.js"></script>
+  <script>
+    let loader = null;
+    let gpuDevice = null;
+    let gpuBuffers = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+    
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+      const files = e.target.files;
+      const info = document.getElementById('fileInfo');
+      
+      if (files.length === 0) {
+        info.style.display = 'none';
+        return;
+      }
+      
+      let html = '<strong>Selected files:</strong><br>';
+      let totalSize = 0;
+      
+      for (const file of files) {
+        const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+        totalSize += file.size;
+        html += `• ${file.name} (${sizeMB} MB)<br>`;
+      }
+      
+      html += `<br><strong>Total: ${(totalSize / 1024 / 1024 / 1024).toFixed(2)} GB</strong>`;
+      info.innerHTML = html;
+      info.style.display = 'block';
+      
+      // Reset state
+      loader = null;
+      gpuBuffers = null;
+      document.getElementById('loadBtn').disabled = true;
+      document.getElementById('testBtn').disabled = true;
+    });
+    
+    async function initWebGPU() {
+      if (gpuDevice) return gpuDevice;
+      
+      log('Initializing WebGPU...', 'progress');
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error('WebGPU not supported');
+      
+      // Request maximum limits
+      gpuDevice = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize,
+        }
+      });
+      
+      log(`✅ WebGPU initialized`, 'pass');
+      log(`   Max buffer size: ${(gpuDevice.limits.maxBufferSize / 1024 / 1024 / 1024).toFixed(2)} GB`, 'info');
+      log(`   Max storage binding: ${(gpuDevice.limits.maxStorageBufferBindingSize / 1024 / 1024).toFixed(0)} MB`, 'info');
+      
+      return gpuDevice;
+    }
+    
+    async function analyzeModel() {
+      clear();
+      const files = Array.from(document.getElementById('fileInput').files);
+      
+      if (files.length === 0) {
+        log('❌ Please select safetensors file(s)', 'fail');
+        return;
+      }
+      
+      files.sort((a, b) => a.name.localeCompare(b.name));
+      
+      log('=== Qwen2.5 Weight Loader V3 ===\n', 'header');
+      log('This version streams weights directly to GPU.\n', 'info');
+      
+      try {
+        loader = new Qwen2WeightLoader(QWEN2_7B_CONFIG);
+        loader.setProgressCallback(msg => log(msg, 'progress'));
+        
+        log('--- Step 1: Parse Headers ---\n', 'header');
+        await loader.loadFiles(files);
+        
+        log('\n--- Step 2: Analyze Structure ---\n', 'header');
+        const analysis = await loader.analyzeModel();
+        
+        log(`\n✅ Model analysis complete:`, 'pass');
+        log(`   Layers: ${analysis.numLayers}`, 'info');
+        log(`   Has embedding: ${analysis.hasEmbed}`, 'info');
+        log(`   Has LM head: ${analysis.hasLmHead}`, 'info');
+        
+        // Estimate memory
+        const layerSizeMB = 28; // Approximate per layer with INT4
+        const embedSizeMB = loader.embedInfo ? loader.embedInfo.sizeMB : 0;
+        const totalEstMB = analysis.numLayers * layerSizeMB + embedSizeMB * 2;
+        
+        log(`\n   Estimated GPU memory: ~${totalEstMB.toFixed(0)} MB`, 'info');
+        
+        document.getElementById('loadBtn').disabled = false;
+        log('\n✅ Ready to load! Click "Load to GPU"', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+    
+    async function loadToGPU() {
+      if (!loader) {
+        log('❌ Analyze model first', 'fail');
+        return;
+      }
+      
+      document.getElementById('loadBtn').disabled = true;
+      
+      try {
+        log('\n--- Step 3: Initialize GPU ---\n', 'header');
+        await initWebGPU();
+        
+        log('\n--- Step 4: Stream Weights to GPU ---\n', 'header');
+        const startTime = performance.now();
+        
+        gpuBuffers = await loader.loadToGPU(gpuDevice);
+        
+        const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+        log(`\n⏱️ Loading took ${elapsed} seconds`, 'info');
+        
+        document.getElementById('testBtn').disabled = false;
+        log('\n🎉 Model loaded! Click "Test Inference" to verify', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+        document.getElementById('loadBtn').disabled = false;
+      }
+    }
+    
+    async function testInference() {
+      if (!gpuBuffers) {
+        log('❌ Load model first', 'fail');
+        return;
+      }
+      
+      log('\n--- Step 5: Test Inference ---\n', 'header');
+      
+      try {
+        // Test a simple INT4 matmul with loaded weights
+        const layer0 = gpuBuffers.layers[0];
+        
+        log('Testing layer 0 q_proj INT4 matmul...', 'progress');
+        
+        const [K, N] = layer0.q_proj.shape;
+        log(`  Shape: [1, ${K}] × [${K}, ${N}] = [1, ${N}]`, 'info');
+        
+        // Create test input (random activations)
+        const inputData = new Float32Array(K);
+        for (let i = 0; i < K; i++) inputData[i] = Math.random() * 0.1;
+        
+        const inputBuffer = gpuDevice.createBuffer({
+          size: K * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        gpuDevice.queue.writeBuffer(inputBuffer, 0, inputData);
+        
+        const outputBuffer = gpuDevice.createBuffer({
+          size: N * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        });
+        
+        // Create INT4 matmul shader (simplified version of your optimized kernel)
+        const numGroups = Math.ceil(K / 128);
+        const shader = `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_PER_GROUP = 16u;
+const GROUP_SIZE = 128u;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  
+  for (var g = 0u; g < NUM_GROUPS; g++) {
+    let s = scales[g * N + col];
+    let base = g * PACKED_PER_GROUP;
+    var acc = 0.0;
+    
+    for (var p = 0u; p < PACKED_PER_GROUP; p++) {
+      let packed = b_packed[(base + p) * N + col];
+      let k_start = g * GROUP_SIZE + p * 8u;
+      
+      for (var sub = 0u; sub < 8u; sub++) {
+        let k = k_start + sub;
+        if (k < ${K}u) {
+          let w = f32((packed >> (sub * 4u)) & 0xFu) - 8.0;
+          acc += a[k] * w;
+        }
+      }
+    }
+    
+    sum += acc * s;
+  }
+  
+  output[col] = sum;
+}`;
+        
+        const module = gpuDevice.createShaderModule({ code: shader });
+        const pipeline = gpuDevice.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+        
+        const bindGroup = gpuDevice.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: inputBuffer } },
+            { binding: 1, resource: { buffer: layer0.q_proj.packed } },
+            { binding: 2, resource: { buffer: layer0.q_proj.scales } },
+            { binding: 3, resource: { buffer: outputBuffer } },
+          ]
+        });
+        
+        // Run
+        const encoder = gpuDevice.createCommandEncoder();
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(Math.ceil(N / 64));
+        pass.end();
+        gpuDevice.queue.submit([encoder.finish()]);
+        await gpuDevice.queue.onSubmittedWorkDone();
+        
+        log('  ✅ Kernel executed successfully', 'pass');
+        
+        // Read back results
+        const readBuffer = gpuDevice.createBuffer({
+          size: N * 4,
+          usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+        });
+        
+        const copyEncoder = gpuDevice.createCommandEncoder();
+        copyEncoder.copyBufferToBuffer(outputBuffer, 0, readBuffer, 0, N * 4);
+        gpuDevice.queue.submit([copyEncoder.finish()]);
+        
+        await readBuffer.mapAsync(GPUMapMode.READ);
+        const result = new Float32Array(readBuffer.getMappedRange().slice(0));
+        readBuffer.unmap();
+        
+        // Check results
+        const min = Math.min(...result);
+        const max = Math.max(...result);
+        const hasNaN = result.some(v => isNaN(v));
+        const hasInf = result.some(v => !isFinite(v));
+        
+        log(`\n  Output stats:`, 'info');
+        log(`    Min: ${min.toExponential(3)}`, 'info');
+        log(`    Max: ${max.toExponential(3)}`, 'info');
+        log(`    Has NaN: ${hasNaN}`, hasNaN ? 'fail' : 'pass');
+        log(`    Has Inf: ${hasInf}`, hasInf ? 'fail' : 'pass');
+        
+        // Benchmark
+        log('\n  Running benchmark (100 iterations)...', 'progress');
+        
+        const iterations = 100;
+        const start = performance.now();
+        
+        for (let i = 0; i < iterations; i++) {
+          const enc = gpuDevice.createCommandEncoder();
+          const p = enc.beginComputePass();
+          p.setPipeline(pipeline);
+          p.setBindGroup(0, bindGroup);
+          p.dispatchWorkgroups(Math.ceil(N / 64));
+          p.end();
+          gpuDevice.queue.submit([enc.finish()]);
+        }
+        await gpuDevice.queue.onSubmittedWorkDone();
+        
+        const timeMs = (performance.now() - start) / iterations;
+        const bytes = K * 4 + layer0.q_proj.packed.size + layer0.q_proj.scales.size + N * 4;
+        const bw = bytes / (timeMs / 1000) / 1e9;
+        
+        log(`\n  Performance:`, 'header');
+        log(`    Time: ${timeMs.toFixed(3)} ms`, 'info');
+        log(`    Bandwidth: ${bw.toFixed(2)} GB/s`, bw > 10 ? 'pass' : 'warn');
+        
+        // Cleanup
+        inputBuffer.destroy();
+        outputBuffer.destroy();
+        readBuffer.destroy();
+        
+        log('\n🎉 Inference test complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+  </script>
+</body>
+</html>

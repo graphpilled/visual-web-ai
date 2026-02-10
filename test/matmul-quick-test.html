@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Quick MatMul Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Quick MatMul Kernel Test</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { Codegen } from '../dist/bundle.js';
+    
+    const log = (msg) => document.getElementById('output').innerHTML += msg + '\n';
+
+    async function test() {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      log('GPU: ' + (adapter.info?.vendor || 'unknown'));
+      
+      const M = 1, K = 4096, N = 4096;
+      const result = Codegen.generate("MatMul", [[M, K], [K, N]]);
+      const [kernel, dispatch] = result;
+      
+      log(`\nKernel: ${kernel.name}`);
+      log(`Dispatch: ${JSON.stringify(dispatch)}`);
+      
+      // Create buffers ONCE
+      const aBuffer = device.createBuffer({ size: M * K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const bBuffer = device.createBuffer({ size: K * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const outBuffer = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.STORAGE });
+      
+      // Upload data ONCE
+      const a = new Float32Array(M * K).fill(1);
+      const b = new Float32Array(K * N).fill(1);
+      device.queue.writeBuffer(aBuffer, 0, a);
+      device.queue.writeBuffer(bBuffer, 0, b);
+      
+      // Compile pipeline ONCE
+      const module = device.createShaderModule({ code: kernel.wgsl });
+      const pipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' }
+      });
+      
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: aBuffer } },
+          { binding: 1, resource: { buffer: bBuffer } },
+          { binding: 2, resource: { buffer: outBuffer } }
+        ]
+      });
+      
+      const workgroupCount = [dispatch.workgroupCount[0], dispatch.workgroupCount[1], dispatch.workgroupCount[2]];
+      
+      // Warmup
+      for (let i = 0; i < 10; i++) {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(...workgroupCount);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+      
+      // Benchmark - time ONLY kernel execution
+      const iterations = 50;
+      const start = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(...workgroupCount);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+      const elapsed = performance.now() - start;
+      
+      const timePerOp = elapsed / iterations;
+      const gflops = (2 * M * K * N) / (timePerOp / 1000) / 1e9;
+      const bandwidth = ((M * K + K * N) * 4) / (timePerOp / 1000) / 1e9;
+      
+      log(`\n=== Results for [${M},${K}] x [${K},${N}] ===`);
+      log(`Time: ${timePerOp.toFixed(2)} ms`);
+      log(`GFLOPS: ${gflops.toFixed(2)}`);
+      log(`Bandwidth: ${bandwidth.toFixed(2)} GB/s`);
+      
+      // Cleanup
+      aBuffer.destroy();
+      bBuffer.destroy();
+      outBuffer.destroy();
+    }
+    
+    test().catch(e => log('ERROR: ' + e.message));
+  </script>
+</body>
+</html>

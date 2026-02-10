@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Weights Test</title>
+</head>
+<body>
+  <h1>Compiler with Weights Test</h1>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { GPURuntime, GraphExecutor } from '../src/runtime.js';
+    import { Compiler } from '../dist/bundle.js';
+
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+
+    async function test() {
+      try {
+        log('=== Weights & Constants Tests ===\n');
+
+        const runtime = new GPURuntime();
+        await runtime.init();
+        log('✓ Runtime initialized\n');
+
+        // =====================
+        // Test 1: Constant tensor
+        // =====================
+        log('Test 1: Constant tensor (x + constant)');
+        const graph1 = Compiler.createGraph();
+        const x1 = Compiler.input(graph1, [4], "input");
+        const c1 = Compiler.constant(graph1, [4], "bias", [1, 2, 3, 4]);
+        const y1 = Compiler.add(graph1, x1, c1);
+        
+        const compiled1 = Compiler.compile(graph1);
+        log(`  Inputs: ${compiled1.inputBufferIds.length}`);
+        log(`  Constants: ${compiled1.constantBufferIds.length}`);
+        log(`  Weights: ${compiled1.weightBufferIds.length}`);
+
+        const executor1 = new GraphExecutor(runtime, compiled1);
+        await executor1.init();
+
+        const input1 = new Float32Array([10, 20, 30, 40]);
+        const output1 = await executor1.execute(input1);
+        
+        // [10,20,30,40] + [1,2,3,4] = [11,22,33,44]
+        const expected1 = [11, 22, 33, 44];
+        const pass1 = expected1.every((v, i) => Math.abs(output1[i] - v) < 0.001);
+        log(`  Input: [${input1}]`);
+        log(`  Constant: [1,2,3,4]`);
+        log(`  Output: [${Array.from(output1)}]`);
+        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor1.destroy();
+
+        // =====================
+        // Test 2: Weight tensor with loading
+        // =====================
+        log('\nTest 2: Weight tensor with loading');
+        const graph2 = Compiler.createGraph();
+        const x2 = Compiler.input(graph2, [4], "input");
+        const w2 = Compiler.weight(graph2, [4], "scale");
+        const y2 = Compiler.mul(graph2, x2, w2);
+        
+        const compiled2 = Compiler.compile(graph2);
+        log(`  Weight names: [${compiled2.weightNames.join(', ')}]`);
+
+        const executor2 = new GraphExecutor(runtime, compiled2);
+        await executor2.init();
+
+        // Load weights
+        executor2.setWeightByName("scale", new Float32Array([2, 2, 2, 2]));
+
+        const input2 = new Float32Array([1, 2, 3, 4]);
+        const output2 = await executor2.execute(input2);
+        
+        // [1,2,3,4] * [2,2,2,2] = [2,4,6,8]
+        const expected2 = [2, 4, 6, 8];
+        const pass2 = expected2.every((v, i) => Math.abs(output2[i] - v) < 0.001);
+        log(`  Input: [${input2}]`);
+        log(`  Weight (scale): [2,2,2,2]`);
+        log(`  Output: [${Array.from(output2)}]`);
+        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor2.destroy();
+
+        // =====================
+        // Test 3: Dense layer with weights
+        // =====================
+        log('\nTest 3: Dense layer (matmul + bias)');
+        const graph3 = Compiler.createGraph();
+        const x3 = Compiler.input(graph3, [1, 2], "input");  // [1, 2] input
+        const y3 = Compiler.dense(graph3, x3, 3, "fc1");     // Output [1, 3]
+        
+        const compiled3 = Compiler.compile(graph3);
+        log(`  Weight names: [${compiled3.weightNames.join(', ')}]`);
+        log(`  Weight shapes: ${compiled3.weightShapes.map(s => `[${s}]`).join(', ')}`);
+
+        const executor3 = new GraphExecutor(runtime, compiled3);
+        await executor3.init();
+
+        // Load weights: W is [2, 3], bias is [3]
+        // W = [[1, 0, -1], [0, 1, 1]]
+        // bias = [1, 1, 1]
+        executor3.loadWeights({
+          "fc1_weight": new Float32Array([1, 0, -1, 0, 1, 1]),  // [2, 3] row-major
+          "fc1_bias": new Float32Array([1, 1, 1])
+        });
+
+        // Input [1, 2] @ W + bias
+        // [1, 2] @ [[1, 0, -1], [0, 1, 1]] = [1, 2, 1]
+        // + [1, 1, 1] = [2, 3, 2]
+        const input3 = new Float32Array([1, 2]);
+        const output3 = await executor3.execute(input3);
+        
+        const expected3 = [2, 3, 2];
+        const pass3 = expected3.every((v, i) => Math.abs(output3[i] - v) < 0.01);
+        log(`  Input: [[1, 2]]`);
+        log(`  Output: [${Array.from(output3).map(x => x.toFixed(2))}]`);
+        log(`  Expected: [${expected3}]`);
+        log(`  ${pass3 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor3.destroy();
+
+        // =====================
+        // Test 4: Multiple outputs
+        // =====================
+        log('\nTest 4: Multiple outputs');
+        const graph4 = Compiler.createGraph();
+        const x4 = Compiler.input(graph4, [4], "input");
+        const relu4 = Compiler.relu(graph4, x4);
+        const sigmoid4 = Compiler.sigmoid(graph4, x4);
+        
+        // Mark both as outputs
+        Compiler.markOutput(graph4, relu4);
+        Compiler.markOutput(graph4, sigmoid4);
+        
+        const compiled4 = Compiler.compile(graph4);
+        log(`  Output buffers: ${compiled4.outputBufferIds.length}`);
+
+        const executor4 = new GraphExecutor(runtime, compiled4);
+        await executor4.init();
+
+        const input4 = new Float32Array([-1, 0, 1, 2]);
+        const outputs4 = await executor4.execute(input4);
+        
+        log(`  Input: [${input4}]`);
+        log(`  ReLU output: [${Array.from(outputs4[0])}]`);
+        log(`  Sigmoid output: [${Array.from(outputs4[1]).map(x => x.toFixed(3))}]`);
+        
+        // Verify ReLU: max(x, 0)
+        const reluExpected = [0, 0, 1, 2];
+        const reluPass = reluExpected.every((v, i) => Math.abs(outputs4[0][i] - v) < 0.001);
+        
+        // Verify Sigmoid
+        const sigmoidExpected = [0.269, 0.5, 0.731, 0.881];
+        const sigmoidPass = sigmoidExpected.every((v, i) => Math.abs(outputs4[1][i] - v) < 0.01);
+        
+        log(`  ${reluPass && sigmoidPass ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor4.destroy();
+
+        // =====================
+        // Test 5: Simple MLP
+        // =====================
+        log('\nTest 5: Simple MLP (input → dense → relu → dense → softmax)');
+        const graph5 = Compiler.createGraph();
+        const x5 = Compiler.input(graph5, [1, 4], "input");
+        const h1 = Compiler.dense(graph5, x5, 4, "hidden");
+        const a1 = Compiler.relu(graph5, h1);
+        const h2 = Compiler.dense(graph5, a1, 2, "output");
+        const y5 = Compiler.softmax(graph5, h2, -1);
+        
+        const compiled5 = Compiler.compile(graph5);
+        log(`  Ops: ${compiled5.ops.length}`);
+        log(`  Weights: [${compiled5.weightNames.join(', ')}]`);
+        log(`  Total buffer size: ${compiled5.totalBufferSize} bytes`);
+
+        const executor5 = new GraphExecutor(runtime, compiled5);
+        await executor5.init();
+
+        // Initialize with identity-like weights for testing
+        executor5.loadWeights({
+          "hidden_weight": new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1
+          ]),
+          "hidden_bias": new Float32Array([0, 0, 0, 0]),
+          "output_weight": new Float32Array([
+            1, -1,
+            1, -1,
+            1, -1,
+            1, -1
+          ]),
+          "output_bias": new Float32Array([0, 0])
+        });
+
+        const input5 = new Float32Array([1, 2, 3, 4]);
+        const output5 = await executor5.execute(input5);
+        
+        log(`  Input: [${input5}]`);
+        log(`  Output (softmax): [${Array.from(output5).map(x => x.toFixed(4))}]`);
+        
+        // Check that softmax sums to 1
+        const sum5 = output5[0] + output5[1];
+        const pass5 = Math.abs(sum5 - 1.0) < 0.01;
+        log(`  Sum: ${sum5.toFixed(4)} ${pass5 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor5.destroy();
+
+        runtime.destroy();
+        log('\n=== All Weight Tests Completed ===');
+
+      } catch (e) {
+        log('✗ Error: ' + e.message);
+        console.error(e);
+      }
+    }
+
+    test();
+  </script>
+</body>
+</html>

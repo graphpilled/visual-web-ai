@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head><title>Autograd Debug</title></head>
+<body>
+  <pre id="output"></pre>
+  <script type="module">
+    import { Autograd } from '../dist/bundle.js';
+    
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+    
+    const kernel = Autograd.genReLUBackwardKernel(4);
+    log('Kernel: ' + JSON.stringify(kernel, null, 2));
+    log('\nBindings:');
+    kernel.bindings.forEach((b, i) => {
+      log(`  ${i}: size=${b.size} (type: ${typeof b.size}), usage=${JSON.stringify(b.usage)}`);
+    });
+  </script>
+</body>
+</html>

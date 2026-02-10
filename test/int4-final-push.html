@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>INT4 Final Optimization Push</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>INT4 Final Push - Targeting 10+ GB/s</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    function quantizeToInt4Transposed(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      
+      // Transposed layout: [packedK, N] for weights, [numGroups, N] for scales
+      const packed = new Uint32Array(packedK * N);
+      const scales = new Float32Array(numGroups * N);
+      
+      for (let i = 0; i < packed.length; i++) packed[i] = Math.random() * 0xFFFFFFFF >>> 0;
+      for (let i = 0; i < scales.length; i++) scales[i] = Math.random() * 0.1;
+      
+      return { packed, scales, packedK, numGroups };
+    }
+
+    // V8 baseline (transposed)
+    function createInt4V8(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[group_idx * N + col];
+    
+    let p0 = b_packed[packed_idx * N + col];
+    let p1 = b_packed[(packed_idx + 1u) * N + col];
+    
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    
+    sum += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0) * scale);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V9: Transposed + process 4 packed at once
+    function createInt4V9(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 4u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[group_idx * N + col];
+    
+    let p0 = b_packed[packed_idx * N + col];
+    let p1 = b_packed[(packed_idx + 1u) * N + col];
+    let p2 = b_packed[(packed_idx + 2u) * N + col];
+    let p3 = b_packed[(packed_idx + 3u) * N + col];
+    
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    let a4 = a[k_base / 4u + 4u];
+    let a5 = a[k_base / 4u + 5u];
+    let a6 = a[k_base / 4u + 6u];
+    let a7 = a[k_base / 4u + 7u];
+    
+    sum += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a4, vec4<f32>(f32((p2>>0u)&0xFu)-8.0, f32((p2>>4u)&0xFu)-8.0, f32((p2>>8u)&0xFu)-8.0, f32((p2>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a5, vec4<f32>(f32((p2>>16u)&0xFu)-8.0, f32((p2>>20u)&0xFu)-8.0, f32((p2>>24u)&0xFu)-8.0, f32((p2>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a6, vec4<f32>(f32((p3>>0u)&0xFu)-8.0, f32((p3>>4u)&0xFu)-8.0, f32((p3>>8u)&0xFu)-8.0, f32((p3>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a7, vec4<f32>(f32((p3>>16u)&0xFu)-8.0, f32((p3>>20u)&0xFu)-8.0, f32((p3>>24u)&0xFu)-8.0, f32((p3>>28u)&0xFu)-8.0) * scale);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V10: Transposed + vec4 weight loads (load 4 consecutive u32s as vec4<u32>)
+    function createInt4V10(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<vec4<u32>>;  // Packed as vec4
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const PACKED_K4 = ${packedK/4}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  
+  for (var pk4 = 0u; pk4 < PACKED_K4; pk4++) {
+    let packed_idx = pk4 * 4u;
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[group_idx * N + col];
+    
+    // Load 4 packed u32s at once
+    let p = b_packed[pk4 * N + col];
+    
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    let a4 = a[k_base / 4u + 4u];
+    let a5 = a[k_base / 4u + 5u];
+    let a6 = a[k_base / 4u + 6u];
+    let a7 = a[k_base / 4u + 7u];
+    
+    sum += dot(a0, vec4<f32>(f32((p.x>>0u)&0xFu)-8.0, f32((p.x>>4u)&0xFu)-8.0, f32((p.x>>8u)&0xFu)-8.0, f32((p.x>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a1, vec4<f32>(f32((p.x>>16u)&0xFu)-8.0, f32((p.x>>20u)&0xFu)-8.0, f32((p.x>>24u)&0xFu)-8.0, f32((p.x>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a2, vec4<f32>(f32((p.y>>0u)&0xFu)-8.0, f32((p.y>>4u)&0xFu)-8.0, f32((p.y>>8u)&0xFu)-8.0, f32((p.y>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a3, vec4<f32>(f32((p.y>>16u)&0xFu)-8.0, f32((p.y>>20u)&0xFu)-8.0, f32((p.y>>24u)&0xFu)-8.0, f32((p.y>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a4, vec4<f32>(f32((p.z>>0u)&0xFu)-8.0, f32((p.z>>4u)&0xFu)-8.0, f32((p.z>>8u)&0xFu)-8.0, f32((p.z>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a5, vec4<f32>(f32((p.z>>16u)&0xFu)-8.0, f32((p.z>>20u)&0xFu)-8.0, f32((p.z>>24u)&0xFu)-8.0, f32((p.z>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a6, vec4<f32>(f32((p.w>>0u)&0xFu)-8.0, f32((p.w>>4u)&0xFu)-8.0, f32((p.w>>8u)&0xFu)-8.0, f32((p.w>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a7, vec4<f32>(f32((p.w>>16u)&0xFu)-8.0, f32((p.w>>20u)&0xFu)-8.0, f32((p.w>>24u)&0xFu)-8.0, f32((p.w>>28u)&0xFu)-8.0) * scale);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V11: Smaller workgroup for better occupancy
+    function createInt4V11(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[group_idx * N + col];
+    
+    let p0 = b_packed[packed_idx * N + col];
+    let p1 = b_packed[(packed_idx + 1u) * N + col];
+    
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    
+    sum += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0) * scale);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V12: Larger group size (256) to reduce scale fetches
+    function createInt4V12(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const packedPerGroup = groupSize / 8;
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+const PACKED_PER_GROUP = ${packedPerGroup}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  
+  for (var g = 0u; g < NUM_GROUPS; g++) {
+    let scale = scales[g * N + col];
+    
+    for (var p = 0u; p < PACKED_PER_GROUP; p += 2u) {
+      let packed_idx = g * PACKED_PER_GROUP + p;
+      let k_base = packed_idx * 8u;
+      
+      let p0 = b_packed[packed_idx * N + col];
+      let p1 = b_packed[(packed_idx + 1u) * N + col];
+      
+      let a0 = a[k_base / 4u];
+      let a1 = a[k_base / 4u + 1u];
+      let a2 = a[k_base / 4u + 2u];
+      let a3 = a[k_base / 4u + 3u];
+      
+      sum += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0) * scale);
+      sum += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0) * scale);
+      sum += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0) * scale);
+      sum += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0) * scale);
+    }
+  }
+  output[col] = sum;
+}`;
+    }
+
+    async function benchmark() {
+      log('=== INT4 Final Push - Targeting 10+ GB/s ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      const configs = [
+        { K: 4096, N: 4096, name: 'QKV [4096→4096]' },
+        { K: 4096, N: 11008, name: 'Gate/Up [4096→11008]' },
+        { K: 11008, N: 4096, name: 'Down [11008→4096]' },
+      ];
+      
+      async function benchShader(name, shaderFn, K, N, groupSize, wgSize = 256) {
+        const q = quantizeToInt4Transposed(K, N, groupSize);
+        
+        const buffers = {
+          a: device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          packed: device.createBuffer({ size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          scales: device.createBuffer({ size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          output: device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE })
+        };
+        
+        device.queue.writeBuffer(buffers.a, 0, new Float32Array(K).fill(0.1));
+        device.queue.writeBuffer(buffers.packed, 0, q.packed);
+        device.queue.writeBuffer(buffers.scales, 0, q.scales);
+        
+        let module;
+        try {
+          module = device.createShaderModule({ code: shaderFn(K, N, groupSize) });
+        } catch (e) {
+          for (const buf of Object.values(buffers)) buf.destroy();
+          return { time: null, error: e.message };
+        }
+        
+        const pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+        
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: buffers.a } },
+            { binding: 1, resource: { buffer: buffers.packed } },
+            { binding: 2, resource: { buffer: buffers.scales } },
+            { binding: 3, resource: { buffer: buffers.output } }
+          ]
+        });
+        
+        const workgroups = Math.ceil(N / wgSize);
+        const iterations = 50;
+        
+        for (let i = 0; i < 10; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const time = (performance.now() - start) / iterations;
+        
+        for (const buf of Object.values(buffers)) buf.destroy();
+        
+        const bytes = K * 4 + q.packed.byteLength + q.scales.byteLength + N * 4;
+        const bw = bytes / (time / 1000) / 1e9;
+        
+        return { time, bw };
+      }
+      
+      const results = {};
+      
+      for (const cfg of configs) {
+        log(`\n--- ${cfg.name} ---`, 'header');
+        results[cfg.name] = {};
+        
+        // Test different group sizes with V8
+        for (const gs of [64, 128, 256]) {
+          const r = await benchShader('V8', createInt4V8, cfg.K, cfg.N, gs);
+          log(`V8 gs=${gs}:  ${r.time?.toFixed(2) || 'ERR'}ms | ${r.bw?.toFixed(2) || '-'} GB/s`);
+          if (!results[cfg.name].best || (r.time && r.time < results[cfg.name].best.time)) {
+            results[cfg.name].best = r;
+            results[cfg.name].bestConfig = `V8 gs=${gs}`;
+          }
+        }
+        
+        const v9 = await benchShader('V9', createInt4V9, cfg.K, cfg.N, 128);
+        log(`V9 (4 pack): ${v9.time?.toFixed(2) || 'ERR'}ms | ${v9.bw?.toFixed(2) || '-'} GB/s`, 
+            v9.time && v9.time < results[cfg.name].best.time ? 'pass' : '');
+        if (v9.time && v9.time < results[cfg.name].best.time) {
+          results[cfg.name].best = v9;
+          results[cfg.name].bestConfig = 'V9';
+        }
+        
+        const v11 = await benchShader('V11', createInt4V11, cfg.K, cfg.N, 128, 64);
+        log(`V11 (wg64): ${v11.time?.toFixed(2) || 'ERR'}ms | ${v11.bw?.toFixed(2) || '-'} GB/s`,
+            v11.time && v11.time < results[cfg.name].best.time ? 'pass' : '');
+        if (v11.time && v11.time < results[cfg.name].best.time) {
+          results[cfg.name].best = v11;
+          results[cfg.name].bestConfig = 'V11';
+        }
+        
+        const v12 = await benchShader('V12', createInt4V12, cfg.K, cfg.N, 128);
+        log(`V12 (grp):  ${v12.time?.toFixed(2) || 'ERR'}ms | ${v12.bw?.toFixed(2) || '-'} GB/s`,
+            v12.time && v12.time < results[cfg.name].best.time ? 'pass' : '');
+        if (v12.time && v12.time < results[cfg.name].best.time) {
+          results[cfg.name].best = v12;
+          results[cfg.name].bestConfig = 'V12';
+        }
+        
+        log(`Best: ${results[cfg.name].bestConfig} @ ${results[cfg.name].best.bw.toFixed(2)} GB/s`, 'pass');
+      }
+      
+      // Final summary
+      log('\n\n=== FINAL SUMMARY ===\n', 'header');
+      
+      let totalTime = 0;
+      for (const cfg of configs) {
+        const r = results[cfg.name];
+        const perLayer = cfg.name.includes('QKV') ? r.best.time * 4 : 
+                        cfg.name.includes('Gate') ? r.best.time * 2 : r.best.time;
+        totalTime += perLayer;
+        log(`${cfg.name}: ${r.best.time.toFixed(2)}ms (${r.best.bw.toFixed(2)} GB/s)`);
+      }
+      
+      log(`\nPer-layer matmul time: ${totalTime.toFixed(2)}ms`);
+      log(`32-layer total: ${(totalTime * 32).toFixed(0)}ms`);
+      
+      // Add other ops estimate
+      const otherOps = 0.17 * 2 + 0.31 + 0.46 + 0.21;  // RMSNorm, RoPE, attention, adds
+      const fullLayerTime = totalTime + otherOps;
+      const fullModelTime = fullLayerTime * 32;
+      
+      log(`\nWith other ops: ${fullLayerTime.toFixed(2)}ms/layer`);
+      log(`Full 7B model: ${fullModelTime.toFixed(0)}ms/token`);
+      log(`Tokens/sec: ${(1000 / fullModelTime).toFixed(2)}`, (1000 / fullModelTime) > 2 ? 'pass' : 'warn');
+    }
+    
+    benchmark().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

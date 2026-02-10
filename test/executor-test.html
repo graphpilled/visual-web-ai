@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Graph Executor Test</title>
+</head>
+<body>
+  <h1>Graph Executor Test</h1>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { GPURuntime, GraphExecutor } from '../src/runtime.js';
+    import { Compiler } from '../dist/bundle.js';
+
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+
+    async function test() {
+      try {
+        log('=== Graph Executor Tests ===\n');
+
+        // Initialize runtime
+        const runtime = new GPURuntime();
+        await runtime.init();
+        log('✓ Runtime initialized\n');
+
+        // =====================
+        // Test 1: Simple ReLU
+        // =====================
+        log('Test 1: Execute ReLU graph');
+        const graph1 = Compiler.createGraph();
+        const x1 = Compiler.input(graph1, [4], "input");
+        const y1 = Compiler.relu(graph1, x1);
+        const compiled1 = Compiler.compile(graph1, [y1]);
+
+        const executor1 = new GraphExecutor(runtime, compiled1);
+        await executor1.init();
+
+        const input1 = new Float32Array([-1, 2, -3, 4]);
+        const output1 = await executor1.execute(input1);
+        
+        const expected1 = [0, 2, 0, 4];
+        const pass1 = expected1.every((v, i) => Math.abs(output1[i] - v) < 0.001);
+        log(`  Input:  [${input1}]`);
+        log(`  Output: [${Array.from(output1)}]`);
+        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor1.destroy();
+
+        // =====================
+        // Test 2: Chained ops (ReLU -> Sigmoid)
+        // =====================
+        log('\nTest 2: Execute chained ops (ReLU → Sigmoid)');
+        const graph2 = Compiler.createGraph();
+        const x2 = Compiler.input(graph2, [4], "input");
+        const r2 = Compiler.relu(graph2, x2);
+        const y2 = Compiler.sigmoid(graph2, r2);
+        const compiled2 = Compiler.compile(graph2, [y2]);
+
+        const executor2 = new GraphExecutor(runtime, compiled2);
+        await executor2.init();
+
+        const input2 = new Float32Array([-1, 0, 1, 2]);
+        const output2 = await executor2.execute(input2);
+        
+        // relu([-1,0,1,2]) = [0,0,1,2]
+        // sigmoid([0,0,1,2]) ≈ [0.5, 0.5, 0.731, 0.881]
+        const expected2 = [0.5, 0.5, 0.731, 0.881];
+        const pass2 = expected2.every((v, i) => Math.abs(output2[i] - v) < 0.01);
+        log(`  Input:  [${input2}]`);
+        log(`  After ReLU → Sigmoid: [${Array.from(output2).map(x => x.toFixed(3))}]`);
+        log(`  Expected: [${expected2}]`);
+        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor2.destroy();
+
+        // =====================
+        // Test 3: Binary op (Add)
+        // =====================
+        log('\nTest 3: Execute binary op (Add)');
+        const graph3 = Compiler.createGraph();
+        const a3 = Compiler.input(graph3, [4], "a");
+        const b3 = Compiler.input(graph3, [4], "b");
+        const y3 = Compiler.add(graph3, a3, b3);
+        const compiled3 = Compiler.compile(graph3, [y3]);
+
+        const executor3 = new GraphExecutor(runtime, compiled3);
+        await executor3.init();
+
+        const inputA = new Float32Array([1, 2, 3, 4]);
+        const inputB = new Float32Array([10, 20, 30, 40]);
+        const output3 = await executor3.execute(inputA, inputB);
+        
+        const expected3 = [11, 22, 33, 44];
+        const pass3 = expected3.every((v, i) => Math.abs(output3[i] - v) < 0.001);
+        log(`  Input A: [${inputA}]`);
+        log(`  Input B: [${inputB}]`);
+        log(`  Output:  [${Array.from(output3)}]`);
+        log(`  ${pass3 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor3.destroy();
+
+        // =====================
+        // Test 4: MatMul
+        // =====================
+        log('\nTest 4: Execute MatMul');
+        const graph4 = Compiler.createGraph();
+        const a4 = Compiler.input(graph4, [2, 3], "a");
+        const b4 = Compiler.input(graph4, [3, 2], "b");
+        const y4 = Compiler.matmul(graph4, a4, b4);
+        const compiled4 = Compiler.compile(graph4, [y4]);
+
+        const executor4 = new GraphExecutor(runtime, compiled4);
+        await executor4.init();
+
+        // A = [[1,2,3], [4,5,6]]
+        // B = [[1,2], [3,4], [5,6]]
+        // Result = [[22,28], [49,64]]
+        const matA = new Float32Array([1,2,3, 4,5,6]);
+        const matB = new Float32Array([1,2, 3,4, 5,6]);
+        const output4 = await executor4.execute(matA, matB);
+        
+        const expected4 = [22, 28, 49, 64];
+        const pass4 = expected4.every((v, i) => Math.abs(output4[i] - v) < 0.01);
+        log(`  A: [[1,2,3], [4,5,6]]`);
+        log(`  B: [[1,2], [3,4], [5,6]]`);
+        log(`  Output: [${Array.from(output4)}]`);
+        log(`  Expected: [${expected4}]`);
+        log(`  ${pass4 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor4.destroy();
+
+        // =====================
+        // Test 5: Complex graph (a + b) * c
+        // =====================
+        log('\nTest 5: Execute (a + b) * c');
+        const graph5 = Compiler.createGraph();
+        const a5 = Compiler.input(graph5, [4], "a");
+        const b5 = Compiler.input(graph5, [4], "b");
+        const c5 = Compiler.input(graph5, [4], "c");
+        const sum5 = Compiler.add(graph5, a5, b5);
+        const y5 = Compiler.mul(graph5, sum5, c5);
+        const compiled5 = Compiler.compile(graph5, [y5]);
+
+        const executor5 = new GraphExecutor(runtime, compiled5);
+        await executor5.init();
+
+        const inA = new Float32Array([1, 2, 3, 4]);
+        const inB = new Float32Array([1, 1, 1, 1]);
+        const inC = new Float32Array([2, 2, 2, 2]);
+        const output5 = await executor5.execute(inA, inB, inC);
+        
+        // (a + b) * c = ([1,2,3,4] + [1,1,1,1]) * [2,2,2,2] = [2,3,4,5] * [2,2,2,2] = [4,6,8,10]
+        const expected5 = [4, 6, 8, 10];
+        const pass5 = expected5.every((v, i) => Math.abs(output5[i] - v) < 0.001);
+        log(`  a = [${inA}]`);
+        log(`  b = [${inB}]`);
+        log(`  c = [${inC}]`);
+        log(`  (a + b) * c = [${Array.from(output5)}]`);
+        log(`  ${pass5 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor5.destroy();
+
+        // =====================
+        // Test 6: Reuse executor
+        // =====================
+        log('\nTest 6: Reuse executor with different inputs');
+        const graph6 = Compiler.createGraph();
+        const x6 = Compiler.input(graph6, [4], "input");
+        const y6 = Compiler.relu(graph6, x6);
+        const compiled6 = Compiler.compile(graph6, [y6]);
+
+        const executor6 = new GraphExecutor(runtime, compiled6);
+        await executor6.init();
+
+        // Run 1
+        const in6a = new Float32Array([-1, -2, -3, -4]);
+        const out6a = await executor6.execute(in6a);
+        log(`  Run 1: [${in6a}] → [${Array.from(out6a)}]`);
+
+        // Run 2 (reuse same executor)
+        const in6b = new Float32Array([1, 2, 3, 4]);
+        const out6b = await executor6.execute(in6b);
+        log(`  Run 2: [${in6b}] → [${Array.from(out6b)}]`);
+
+        // Run 3
+        const in6c = new Float32Array([-5, 6, -7, 8]);
+        const out6c = await executor6.execute(in6c);
+        log(`  Run 3: [${in6c}] → [${Array.from(out6c)}]`);
+
+        const pass6 = out6a.every(v => v === 0) && 
+                      out6b.every((v, i) => v === in6b[i]) &&
+                      out6c[0] === 0 && out6c[1] === 6 && out6c[2] === 0 && out6c[3] === 8;
+        log(`  ${pass6 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor6.destroy();
+
+        runtime.destroy();
+        log('\n=== All Executor Tests Completed ===');
+
+      } catch (e) {
+        log('✗ Error: ' + e.message);
+        console.error(e);
+      }
+    }
+
+    test();
+  </script>
+</body>
+</html>

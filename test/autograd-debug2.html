@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head><title>Autograd Debug 2</title></head>
+<body>
+  <pre id="output"></pre>
+  <script type="module">
+    import { GPURuntime } from '../src/runtime.js';
+    import { Autograd } from '../dist/bundle.js';
+    
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+    
+    async function test() {
+      const runtime = new GPURuntime();
+      await runtime.init();
+      log('Runtime initialized');
+      
+      const kernel = Autograd.genReLUBackwardKernel(4);
+      log('Kernel: ' + kernel.name);
+      log('Bindings: ' + JSON.stringify(kernel.bindings));
+      
+      // Manually create buffers
+      const gradOut = new Float32Array([1, 1, 1, 1]);
+      const x = new Float32Array([-1, 0, 1, 2]);
+      const gradX = new Float32Array(4);
+      
+      log('Creating buffer 1 with size: ' + gradOut.byteLength);
+      const buf1 = runtime.createBuffer(gradOut, 'read-only-storage');
+      log('Buffer 1 created');
+      
+      log('Creating buffer 2 with size: ' + x.byteLength);
+      const buf2 = runtime.createBuffer(x, 'read-only-storage');
+      log('Buffer 2 created');
+      
+      log('Creating buffer 3 with size: ' + gradX.byteLength);
+      const buf3 = runtime.createBuffer(gradX, 'storage');
+      log('Buffer 3 created');
+      
+      const pipeline = await runtime.createPipeline(kernel.wgsl);
+      log('Pipeline created');
+      
+      await runtime.dispatch(pipeline, [buf1, buf2, buf3], {
+        workgroupCount: [1, 1, 1]
+      });
+      log('Dispatched');
+      
+      const result = await runtime.readBuffer(buf3);
+      log('Result: ' + Array.from(result));
+      
+      runtime.destroy();
+    }
+    
+    test().catch(e => {
+      document.getElementById('output').textContent += 'Error: ' + e.message + '\n' + e.stack;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RMSNorm Kernel Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+  </style>
+</head>
+<body>
+  <h1>🔧 RMSNorm Kernel Test</h1>
+  <p>Tests the RMSNorm WGSL kernel for Qwen2.5 inference.</p>
+  <button onclick="runTests()">Run All Tests</button>
+  <button onclick="runBenchmark()">Run Benchmark</button>
+  <pre id="output"></pre>
+
+  <script>
+    let device = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+
+    // Reference CPU implementation
+    function rmsNormCPU(input, weight, epsilon = 1e-6) {
+      const n = input.length;
+      let sumSq = 0;
+      for (let i = 0; i < n; i++) {
+        sumSq += input[i] * input[i];
+      }
+      const rms = Math.sqrt(sumSq / n + epsilon);
+      const scale = 1.0 / rms;
+      
+      const output = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        output[i] = input[i] * scale * weight[i];
+      }
+      return output;
+    }
+
+    // Generate optimized RMSNorm WGSL shader
+    function genRMSNormShader(normSize, epsilon = 1e-6) {
+      const wgSize = 256;
+      
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const NORM = ${normSize}u;
+const EPSILON = ${epsilon};
+const WG_SIZE = ${wgSize}u;
+
+var<workgroup> wg_scratch: array<f32, ${wgSize}>;
+
+@compute @workgroup_size(${wgSize})
+fn main(
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(workgroup_id) wgid: vec3<u32>
+) {
+  let tid = lid.x;
+  
+  // Phase 1: Each thread accumulates sum of squares for its elements
+  var localSumSq = 0.0;
+  for (var i = tid; i < NORM; i = i + WG_SIZE) {
+    let x = input[i];
+    localSumSq = localSumSq + x * x;
+  }
+  wg_scratch[tid] = localSumSq;
+  workgroupBarrier();
+  
+  // Phase 2: Parallel reduction in shared memory
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (tid < stride) {
+      wg_scratch[tid] = wg_scratch[tid] + wg_scratch[tid + stride];
+    }
+    workgroupBarrier();
+  }
+  
+  // Phase 3: Compute scale (all threads read the final result)
+  let sumSq = wg_scratch[0];
+  let rms = sqrt(sumSq / f32(NORM) + EPSILON);
+  let scale = 1.0 / rms;
+  
+  // Phase 4: Each thread normalizes its elements
+  for (var i = tid; i < NORM; i = i + WG_SIZE) {
+    output[i] = input[i] * scale * weight[i];
+  }
+}`;
+    }
+
+    async function initWebGPU() {
+      if (device) return device;
+      
+      if (!navigator.gpu) {
+        throw new Error('WebGPU not supported');
+      }
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        throw new Error('No GPU adapter found');
+      }
+      
+      device = await adapter.requestDevice();
+      log('✅ WebGPU initialized', 'pass');
+      return device;
+    }
+
+    async function createRMSNormPipeline(normSize, epsilon = 1e-6) {
+      const shader = genRMSNormShader(normSize, epsilon);
+      
+      const shaderModule = device.createShaderModule({
+        code: shader
+      });
+      
+      const pipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: {
+          module: shaderModule,
+          entryPoint: 'main'
+        }
+      });
+      
+      return pipeline;
+    }
+
+    async function runRMSNorm(pipeline, input, weight, normSize) {
+      const inputBuffer = device.createBuffer({
+        size: normSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+      });
+      new Float32Array(inputBuffer.getMappedRange()).set(input);
+      inputBuffer.unmap();
+      
+      const weightBuffer = device.createBuffer({
+        size: normSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+      });
+      new Float32Array(weightBuffer.getMappedRange()).set(weight);
+      weightBuffer.unmap();
+      
+      const outputBuffer = device.createBuffer({
+        size: normSize * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+      });
+      
+      const readBuffer = device.createBuffer({
+        size: normSize * 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+      });
+      
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: inputBuffer } },
+          { binding: 1, resource: { buffer: weightBuffer } },
+          { binding: 2, resource: { buffer: outputBuffer } }
+        ]
+      });
+      
+      const commandEncoder = device.createCommandEncoder();
+      const pass = commandEncoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(1); // Single workgroup for single-token
+      pass.end();
+      
+      commandEncoder.copyBufferToBuffer(outputBuffer, 0, readBuffer, 0, normSize * 4);
+      device.queue.submit([commandEncoder.finish()]);
+      
+      await readBuffer.mapAsync(GPUMapMode.READ);
+      const result = new Float32Array(readBuffer.getMappedRange().slice(0));
+      readBuffer.unmap();
+      
+      // Cleanup
+      inputBuffer.destroy();
+      weightBuffer.destroy();
+      outputBuffer.destroy();
+      readBuffer.destroy();
+      
+      return result;
+    }
+
+    function compareArrays(a, b, tolerance = 1e-4) {
+      if (a.length !== b.length) return false;
+      let maxDiff = 0;
+      for (let i = 0; i < a.length; i++) {
+        const diff = Math.abs(a[i] - b[i]);
+        maxDiff = Math.max(maxDiff, diff);
+        if (diff > tolerance) {
+          return { match: false, maxDiff, index: i };
+        }
+      }
+      return { match: true, maxDiff };
+    }
+
+    async function runTests() {
+      clear();
+      log('=== RMSNorm Kernel Tests ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        const testCases = [
+          { name: 'Small (64)', normSize: 64 },
+          { name: 'Medium (512)', normSize: 512 },
+          { name: 'Qwen2.5 hidden (3584)', normSize: 3584 },
+          { name: 'LLaMA 7B hidden (4096)', normSize: 4096 },
+        ];
+        
+        for (const tc of testCases) {
+          log(`\nTest: ${tc.name}`, 'header');
+          
+          // Create random input and weights
+          const input = new Float32Array(tc.normSize);
+          const weight = new Float32Array(tc.normSize);
+          for (let i = 0; i < tc.normSize; i++) {
+            input[i] = (Math.random() - 0.5) * 2;  // [-1, 1]
+            weight[i] = (Math.random() * 0.5) + 0.75;  // [0.75, 1.25]
+          }
+          
+          // CPU reference
+          const expected = rmsNormCPU(input, weight);
+          
+          // GPU result
+          const pipeline = await createRMSNormPipeline(tc.normSize);
+          const actual = await runRMSNorm(pipeline, input, weight, tc.normSize);
+          
+          // Compare
+          const result = compareArrays(expected, actual);
+          
+          if (result.match) {
+            log(`  ✅ PASS (max diff: ${result.maxDiff.toExponential(2)})`, 'pass');
+          } else {
+            log(`  ❌ FAIL at index ${result.index} (max diff: ${result.maxDiff.toExponential(2)})`, 'fail');
+            log(`    Expected: ${expected[result.index]}`);
+            log(`    Actual: ${actual[result.index]}`);
+          }
+          
+          // Show some sample values
+          log(`  Sample output[0]: ${actual[0].toFixed(6)}`);
+          log(`  Sample output[${tc.normSize-1}]: ${actual[tc.normSize-1].toFixed(6)}`);
+        }
+        
+        // Test with specific known values (padded to 256 for workgroup size)
+        log('\n\nTest: Known Values', 'header');
+        const knownSize = 256;
+        const knownInput = new Float32Array(knownSize);
+        const knownWeight = new Float32Array(knownSize);
+        // Set first 4 values, rest are zero
+        knownInput[0] = 1; knownInput[1] = 2; knownInput[2] = 3; knownInput[3] = 4;
+        for (let i = 0; i < knownSize; i++) knownWeight[i] = 1;
+        
+        // RMS = sqrt((1+4+9+16)/256) = sqrt(30/256) ≈ 0.3423
+        // scale = 1/0.3423 ≈ 2.922
+        
+        const pipeline = await createRMSNormPipeline(knownSize);
+        const result = await runRMSNorm(pipeline, knownInput, knownWeight, knownSize);
+        
+        const expectedRMS = Math.sqrt((1+4+9+16)/knownSize + 1e-6);
+        const expectedScale = 1.0 / expectedRMS;
+        log(`  Input: [1, 2, 3, 4, 0, 0, ...] (${knownSize} elements)`);
+        log(`  Expected RMS: ${expectedRMS.toFixed(6)}`);
+        log(`  Expected scale: ${expectedScale.toFixed(6)}`);
+        log(`  Expected output[0:4]: [${(1*expectedScale).toFixed(4)}, ${(2*expectedScale).toFixed(4)}, ${(3*expectedScale).toFixed(4)}, ${(4*expectedScale).toFixed(4)}]`);
+        log(`  Actual output[0:4]: [${result[0].toFixed(4)}, ${result[1].toFixed(4)}, ${result[2].toFixed(4)}, ${result[3].toFixed(4)}]`);
+        
+        const knownExpected = new Float32Array(knownSize);
+        for (let i = 0; i < knownSize; i++) knownExpected[i] = knownInput[i] * expectedScale;
+        
+        const knownResult = compareArrays(knownExpected, result);
+        log(`  ${knownResult.match ? '✅ PASS' : '❌ FAIL'}`, knownResult.match ? 'pass' : 'fail');
+        
+        log('\n✅ All tests complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runBenchmark() {
+      clear();
+      log('=== RMSNorm Benchmark ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        // Benchmark Qwen2.5 size (3584)
+        const normSize = 3584;
+        const iterations = 1000;
+        
+        log(`Size: ${normSize} (Qwen2.5 hidden dim)`, 'info');
+        log(`Iterations: ${iterations}\n`);
+        
+        // Create persistent buffers
+        const input = new Float32Array(normSize);
+        const weight = new Float32Array(normSize);
+        for (let i = 0; i < normSize; i++) {
+          input[i] = (Math.random() - 0.5) * 2;
+          weight[i] = 1.0;
+        }
+        
+        const pipeline = await createRMSNormPipeline(normSize);
+        
+        const inputBuffer = device.createBuffer({
+          size: normSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Float32Array(inputBuffer.getMappedRange()).set(input);
+        inputBuffer.unmap();
+        
+        const weightBuffer = device.createBuffer({
+          size: normSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Float32Array(weightBuffer.getMappedRange()).set(weight);
+        weightBuffer.unmap();
+        
+        const outputBuffer = device.createBuffer({
+          size: normSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
+        
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: inputBuffer } },
+            { binding: 1, resource: { buffer: weightBuffer } },
+            { binding: 2, resource: { buffer: outputBuffer } }
+          ]
+        });
+        
+        // Warmup
+        for (let i = 0; i < 10; i++) {
+          const commandEncoder = device.createCommandEncoder();
+          const pass = commandEncoder.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(1);
+          pass.end();
+          device.queue.submit([commandEncoder.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Benchmark
+        const start = performance.now();
+        
+        for (let i = 0; i < iterations; i++) {
+          const commandEncoder = device.createCommandEncoder();
+          const pass = commandEncoder.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(1);
+          pass.end();
+          device.queue.submit([commandEncoder.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        const elapsed = performance.now() - start;
+        const avgTime = elapsed / iterations;
+        
+        // Memory bandwidth calculation
+        // Read: input (normSize * 4) + weight (normSize * 4)
+        // Write: output (normSize * 4)
+        // Total: normSize * 12 bytes
+        const bytesPerOp = normSize * 12;
+        const bandwidth = (bytesPerOp / avgTime) / 1e6; // GB/s
+        
+        log(`Results:`, 'header');
+        log(`  Total time: ${elapsed.toFixed(2)} ms`);
+        log(`  Average time: ${(avgTime * 1000).toFixed(2)} µs`);
+        log(`  Throughput: ${(1000 / avgTime).toFixed(0)} ops/sec`);
+        log(`  Memory: ${(bytesPerOp / 1024).toFixed(1)} KB per op`);
+        log(`  Bandwidth: ${bandwidth.toFixed(2)} GB/s`);
+        
+        // Compare to matmul time
+        log(`\n📊 Context:`, 'info');
+        log(`  In Qwen2.5 7B, RMSNorm runs 2x per layer (56 total)`);
+        log(`  At ${(avgTime * 1000).toFixed(2)} µs each = ${(avgTime * 56).toFixed(2)} ms total`);
+        log(`  This is ~${(avgTime * 56 / 310 * 100).toFixed(1)}% of one INT4 matmul forward pass`);
+        
+        // Cleanup
+        inputBuffer.destroy();
+        weightBuffer.destroy();
+        outputBuffer.destroy();
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+  </script>
+</body>
+</html>

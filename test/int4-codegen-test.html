@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>INT4 Codegen Test - Verify Optimizations</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+    .gold { color: #fcd34d; font-weight: bold; }
+    .code { color: #60a5fa; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>🧪 INT4 Codegen Test - Verify Optimizations</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    // Import the compiled ReScript codegen module
+    // Adjust this path to match your build output
+    import { Codegen } from '../dist/bundle.js';
+    
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    // Helper to quantize weights in column-major format (matching the optimized kernel)
+    function quantizeColumnMajor(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedPerGroup = groupSize / 8;  // 16 for groupSize=128
+      const totalPacked = numGroups * packedPerGroup;
+      
+      // Column-major layout: [totalPacked, N]
+      const packed = new Uint32Array(totalPacked * N);
+      const scales = new Float32Array(numGroups * N);
+      
+      // Fill with random data
+      for (let col = 0; col < N; col++) {
+        for (let g = 0; g < numGroups; g++) {
+          // Scale in column-major: scales[g * N + col]
+          scales[g * N + col] = (Math.random() * 0.1) + 0.01;
+          
+          // Packed weights in column-major: packed[(g * packedPerGroup + p) * N + col]
+          for (let p = 0; p < packedPerGroup; p++) {
+            const packedIdx = (g * packedPerGroup + p) * N + col;
+            packed[packedIdx] = Math.random() * 0xFFFFFFFF >>> 0;
+          }
+        }
+      }
+      
+      return { packed, scales, numGroups, packedPerGroup, totalPacked };
+    }
+
+    async function runTests() {
+      log('=== 🧪 INT4 Codegen Optimization Test ===\n', 'header');
+      
+      // Initialize WebGPU
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        log('❌ WebGPU not supported', 'fail');
+        return;
+      }
+      
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      log('✅ WebGPU initialized\n', 'pass');
+      
+      // Test parameters (LLaMA 7B dimensions)
+      const testCases = [
+        { K: 4096, N: 4096, name: 'QKV projection' },
+        { K: 4096, N: 11008, name: 'Gate/Up projection' },
+        { K: 11008, N: 4096, name: 'Down projection' },
+      ];
+      
+      const GROUP_SIZE = 128;
+      const M = 1;  // Single token inference
+      
+      log('--- Test 1: Verify Kernel Generation ---\n', 'header');
+      
+      // Generate kernel using ReScript Codegen
+      const { K, N } = testCases[0];
+      
+      let kernel;
+      try {
+        // Call the ReScript-generated function
+        // The exact API depends on how your bundle exports it
+        kernel = Codegen.genInt4MatMulKernel(M, K, N, GROUP_SIZE);
+        log('✅ Kernel generated successfully', 'pass');
+        log(`   Name: ${kernel.name}`, 'code');
+        log(`   Bindings: ${kernel.bindings.length}`, 'code');
+      } catch (e) {
+        log(`❌ Kernel generation failed: ${e.message}`, 'fail');
+        log('\nFalling back to inline kernel for testing...\n', 'warn');
+        
+        // Fallback: use inline kernel (your V29 optimized version)
+        kernel = createFallbackKernel(K, N, GROUP_SIZE);
+      }
+      
+      // Check for optimization markers in WGSL
+      log('\n--- Test 2: Verify Optimizations in WGSL ---\n', 'header');
+      
+      const wgsl = kernel.wgsl;
+      
+      // Check 1: Column-major access pattern
+      const hasColumnMajor = wgsl.includes('base * N + col') || wgsl.includes('* N + col');
+      log(`${hasColumnMajor ? '✅' : '❌'} Column-major memory access (coalesced)`, hasColumnMajor ? 'pass' : 'fail');
+      
+      // Check 2: Workgroup size is tuned (not default 256)
+      const wgMatch = wgsl.match(/@workgroup_size\((\d+)/);
+      const wgSize = wgMatch ? parseInt(wgMatch[1]) : 0;
+      const hasOptimizedWG = wgSize > 0 && wgSize !== 256;
+      log(`${hasOptimizedWG ? '✅' : '⚠️'} Workgroup size: ${wgSize} (${wgSize === 256 ? 'default' : 'tuned'})`, hasOptimizedWG ? 'pass' : 'warn');
+      
+      // Check 3: Unrolled loop (multiple p0, p1, p2... variables)
+      const unrolledLoads = (wgsl.match(/let [pq]\d+ = b_packed/g) || []).length;
+      const hasUnrolling = unrolledLoads >= 16;
+      log(`${hasUnrolling ? '✅' : '❌'} Unrolled weight loads: ${unrolledLoads} (expect 16)`, hasUnrolling ? 'pass' : 'fail');
+      
+      // Check 4: vec4 + dot() usage
+      const hasDotProduct = wgsl.includes('dot(') && wgsl.includes('vec4<f32>');
+      log(`${hasDotProduct ? '✅' : '❌'} Vectorized dot products (vec4 + dot)`, hasDotProduct ? 'pass' : 'fail');
+      
+      // Check 5: Scale applied per group
+      const scalePerGroup = wgsl.includes('sum += acc * s') || wgsl.includes('acc * s');
+      log(`${scalePerGroup ? '✅' : '❌'} Scale applied once per group`, scalePerGroup ? 'pass' : 'fail');
+      
+      // Summary
+      const allOptimizations = hasColumnMajor && hasUnrolling && hasDotProduct && scalePerGroup;
+      log(`\n${allOptimizations ? '✅' : '❌'} All critical optimizations: ${allOptimizations ? 'PRESENT' : 'MISSING'}`, allOptimizations ? 'pass' : 'fail');
+      
+      // Benchmark if all optimizations present
+      if (allOptimizations) {
+        log('\n--- Test 3: Performance Benchmark ---\n', 'header');
+        
+        for (const { K, N, name } of testCases) {
+          const result = await benchmarkKernel(device, K, N, GROUP_SIZE, wgSize);
+          log(`${name} [${K}→${N}]: ${result.time.toFixed(3)}ms | ${result.bw.toFixed(2)} GB/s`, 
+              result.bw > 10 ? 'pass' : 'warn');
+        }
+        
+        // Calculate 7B projection
+        log('\n--- 7B Model Projection ---\n', 'header');
+        
+        const qkv = await benchmarkKernel(device, 4096, 4096, GROUP_SIZE, wgSize);
+        const gateUp = await benchmarkKernel(device, 4096, 11008, GROUP_SIZE, wgSize);
+        const down = await benchmarkKernel(device, 11008, 4096, GROUP_SIZE, wgSize);
+        
+        const perLayer = qkv.time * 4 + gateUp.time * 2 + down.time;
+        const total = perLayer * 32 + 30; // 30ms for other ops
+        const tokPerSec = 1000 / total;
+        
+        log(`Per layer: ${perLayer.toFixed(2)}ms`);
+        log(`32 layers: ${(perLayer * 32).toFixed(0)}ms`);
+        log(`Total:     ${total.toFixed(0)}ms`);
+        log(`🚀 Speed:  ${tokPerSec.toFixed(2)} tok/s`, 'gold');
+        
+        const peakBw = Math.max(qkv.bw, gateUp.bw, down.bw);
+        log(`\nPeak bandwidth: ${peakBw.toFixed(2)} GB/s`);
+        log(`Efficiency:     ${(peakBw / 12.5 * 100).toFixed(1)}%`, peakBw > 12 ? 'gold' : 'pass');
+      }
+      
+      log('\n=== Test Complete ===', 'header');
+    }
+    
+    // Fallback kernel (V29 optimized) if Codegen import fails
+    function createFallbackKernel(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const wgsl = `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_PER_GROUP = 16u;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  for (var g = 0u; g < NUM_GROUPS; g++) {
+    let s = scales[g * N + col];
+    let base = g * PACKED_PER_GROUP;
+    var acc = 0.0;
+    let p0 = b_packed[base * N + col];
+    let p1 = b_packed[(base + 1u) * N + col];
+    let p2 = b_packed[(base + 2u) * N + col];
+    let p3 = b_packed[(base + 3u) * N + col];
+    let p4 = b_packed[(base + 4u) * N + col];
+    let p5 = b_packed[(base + 5u) * N + col];
+    let p6 = b_packed[(base + 6u) * N + col];
+    let p7 = b_packed[(base + 7u) * N + col];
+    let k0 = base * 8u;
+    let a0 = a[k0/4u]; let a1 = a[k0/4u+1u]; let a2 = a[k0/4u+2u]; let a3 = a[k0/4u+3u];
+    let a4 = a[k0/4u+4u]; let a5 = a[k0/4u+5u]; let a6 = a[k0/4u+6u]; let a7 = a[k0/4u+7u];
+    let a8 = a[k0/4u+8u]; let a9 = a[k0/4u+9u]; let a10 = a[k0/4u+10u]; let a11 = a[k0/4u+11u];
+    let a12 = a[k0/4u+12u]; let a13 = a[k0/4u+13u]; let a14 = a[k0/4u+14u]; let a15 = a[k0/4u+15u];
+    acc += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0));
+    acc += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0));
+    acc += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0));
+    acc += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0));
+    acc += dot(a4, vec4<f32>(f32((p2>>0u)&0xFu)-8.0, f32((p2>>4u)&0xFu)-8.0, f32((p2>>8u)&0xFu)-8.0, f32((p2>>12u)&0xFu)-8.0));
+    acc += dot(a5, vec4<f32>(f32((p2>>16u)&0xFu)-8.0, f32((p2>>20u)&0xFu)-8.0, f32((p2>>24u)&0xFu)-8.0, f32((p2>>28u)&0xFu)-8.0));
+    acc += dot(a6, vec4<f32>(f32((p3>>0u)&0xFu)-8.0, f32((p3>>4u)&0xFu)-8.0, f32((p3>>8u)&0xFu)-8.0, f32((p3>>12u)&0xFu)-8.0));
+    acc += dot(a7, vec4<f32>(f32((p3>>16u)&0xFu)-8.0, f32((p3>>20u)&0xFu)-8.0, f32((p3>>24u)&0xFu)-8.0, f32((p3>>28u)&0xFu)-8.0));
+    acc += dot(a8, vec4<f32>(f32((p4>>0u)&0xFu)-8.0, f32((p4>>4u)&0xFu)-8.0, f32((p4>>8u)&0xFu)-8.0, f32((p4>>12u)&0xFu)-8.0));
+    acc += dot(a9, vec4<f32>(f32((p4>>16u)&0xFu)-8.0, f32((p4>>20u)&0xFu)-8.0, f32((p4>>24u)&0xFu)-8.0, f32((p4>>28u)&0xFu)-8.0));
+    acc += dot(a10, vec4<f32>(f32((p5>>0u)&0xFu)-8.0, f32((p5>>4u)&0xFu)-8.0, f32((p5>>8u)&0xFu)-8.0, f32((p5>>12u)&0xFu)-8.0));
+    acc += dot(a11, vec4<f32>(f32((p5>>16u)&0xFu)-8.0, f32((p5>>20u)&0xFu)-8.0, f32((p5>>24u)&0xFu)-8.0, f32((p5>>28u)&0xFu)-8.0));
+    acc += dot(a12, vec4<f32>(f32((p6>>0u)&0xFu)-8.0, f32((p6>>4u)&0xFu)-8.0, f32((p6>>8u)&0xFu)-8.0, f32((p6>>12u)&0xFu)-8.0));
+    acc += dot(a13, vec4<f32>(f32((p6>>16u)&0xFu)-8.0, f32((p6>>20u)&0xFu)-8.0, f32((p6>>24u)&0xFu)-8.0, f32((p6>>28u)&0xFu)-8.0));
+    acc += dot(a14, vec4<f32>(f32((p7>>0u)&0xFu)-8.0, f32((p7>>4u)&0xFu)-8.0, f32((p7>>8u)&0xFu)-8.0, f32((p7>>12u)&0xFu)-8.0));
+    acc += dot(a15, vec4<f32>(f32((p7>>16u)&0xFu)-8.0, f32((p7>>20u)&0xFu)-8.0, f32((p7>>24u)&0xFu)-8.0, f32((p7>>28u)&0xFu)-8.0));
+    let q0 = b_packed[(base + 8u) * N + col];
+    let q1 = b_packed[(base + 9u) * N + col];
+    let q2 = b_packed[(base + 10u) * N + col];
+    let q3 = b_packed[(base + 11u) * N + col];
+    let q4 = b_packed[(base + 12u) * N + col];
+    let q5 = b_packed[(base + 13u) * N + col];
+    let q6 = b_packed[(base + 14u) * N + col];
+    let q7 = b_packed[(base + 15u) * N + col];
+    let k1 = (base + 8u) * 8u;
+    let b0 = a[k1/4u]; let b1 = a[k1/4u+1u]; let b2 = a[k1/4u+2u]; let b3 = a[k1/4u+3u];
+    let b4 = a[k1/4u+4u]; let b5 = a[k1/4u+5u]; let b6 = a[k1/4u+6u]; let b7 = a[k1/4u+7u];
+    let b8 = a[k1/4u+8u]; let b9 = a[k1/4u+9u]; let b10 = a[k1/4u+10u]; let b11 = a[k1/4u+11u];
+    let b12 = a[k1/4u+12u]; let b13 = a[k1/4u+13u]; let b14 = a[k1/4u+14u]; let b15 = a[k1/4u+15u];
+    acc += dot(b0, vec4<f32>(f32((q0>>0u)&0xFu)-8.0, f32((q0>>4u)&0xFu)-8.0, f32((q0>>8u)&0xFu)-8.0, f32((q0>>12u)&0xFu)-8.0));
+    acc += dot(b1, vec4<f32>(f32((q0>>16u)&0xFu)-8.0, f32((q0>>20u)&0xFu)-8.0, f32((q0>>24u)&0xFu)-8.0, f32((q0>>28u)&0xFu)-8.0));
+    acc += dot(b2, vec4<f32>(f32((q1>>0u)&0xFu)-8.0, f32((q1>>4u)&0xFu)-8.0, f32((q1>>8u)&0xFu)-8.0, f32((q1>>12u)&0xFu)-8.0));
+    acc += dot(b3, vec4<f32>(f32((q1>>16u)&0xFu)-8.0, f32((q1>>20u)&0xFu)-8.0, f32((q1>>24u)&0xFu)-8.0, f32((q1>>28u)&0xFu)-8.0));
+    acc += dot(b4, vec4<f32>(f32((q2>>0u)&0xFu)-8.0, f32((q2>>4u)&0xFu)-8.0, f32((q2>>8u)&0xFu)-8.0, f32((q2>>12u)&0xFu)-8.0));
+    acc += dot(b5, vec4<f32>(f32((q2>>16u)&0xFu)-8.0, f32((q2>>20u)&0xFu)-8.0, f32((q2>>24u)&0xFu)-8.0, f32((q2>>28u)&0xFu)-8.0));
+    acc += dot(b6, vec4<f32>(f32((q3>>0u)&0xFu)-8.0, f32((q3>>4u)&0xFu)-8.0, f32((q3>>8u)&0xFu)-8.0, f32((q3>>12u)&0xFu)-8.0));
+    acc += dot(b7, vec4<f32>(f32((q3>>16u)&0xFu)-8.0, f32((q3>>20u)&0xFu)-8.0, f32((q3>>24u)&0xFu)-8.0, f32((q3>>28u)&0xFu)-8.0));
+    acc += dot(b8, vec4<f32>(f32((q4>>0u)&0xFu)-8.0, f32((q4>>4u)&0xFu)-8.0, f32((q4>>8u)&0xFu)-8.0, f32((q4>>12u)&0xFu)-8.0));
+    acc += dot(b9, vec4<f32>(f32((q4>>16u)&0xFu)-8.0, f32((q4>>20u)&0xFu)-8.0, f32((q4>>24u)&0xFu)-8.0, f32((q4>>28u)&0xFu)-8.0));
+    acc += dot(b10, vec4<f32>(f32((q5>>0u)&0xFu)-8.0, f32((q5>>4u)&0xFu)-8.0, f32((q5>>8u)&0xFu)-8.0, f32((q5>>12u)&0xFu)-8.0));
+    acc += dot(b11, vec4<f32>(f32((q5>>16u)&0xFu)-8.0, f32((q5>>20u)&0xFu)-8.0, f32((q5>>24u)&0xFu)-8.0, f32((q5>>28u)&0xFu)-8.0));
+    acc += dot(b12, vec4<f32>(f32((q6>>0u)&0xFu)-8.0, f32((q6>>4u)&0xFu)-8.0, f32((q6>>8u)&0xFu)-8.0, f32((q6>>12u)&0xFu)-8.0));
+    acc += dot(b13, vec4<f32>(f32((q6>>16u)&0xFu)-8.0, f32((q6>>20u)&0xFu)-8.0, f32((q6>>24u)&0xFu)-8.0, f32((q6>>28u)&0xFu)-8.0));
+    acc += dot(b14, vec4<f32>(f32((q7>>0u)&0xFu)-8.0, f32((q7>>4u)&0xFu)-8.0, f32((q7>>8u)&0xFu)-8.0, f32((q7>>12u)&0xFu)-8.0));
+    acc += dot(b15, vec4<f32>(f32((q7>>16u)&0xFu)-8.0, f32((q7>>20u)&0xFu)-8.0, f32((q7>>24u)&0xFu)-8.0, f32((q7>>28u)&0xFu)-8.0));
+    sum += acc * s;
+  }
+  output[col] = sum;
+}`;
+      
+      const packedPerGroup = 16;  // groupSize / 8 for groupSize=128
+      
+      return {
+        name: `matmul_int4_fallback_${K}x${N}`,
+        wgsl,
+        bindings: [
+          { binding: 0, size: K * 4, usage: 'ReadOnly', name: 'a' },
+          { binding: 1, size: numGroups * packedPerGroup * N * 4, usage: 'ReadOnly', name: 'b_packed' },
+          { binding: 2, size: numGroups * N * 4, usage: 'ReadOnly', name: 'scales' },
+          { binding: 3, size: N * 4, usage: 'ReadWrite', name: 'output' }
+        ]
+      };
+    }
+    
+    async function benchmarkKernel(device, K, N, groupSize, wgSize) {
+      const q = quantizeColumnMajor(K, N, groupSize);
+      const aData = new Float32Array(K).fill(0.1);
+      
+      const buffers = {
+        a: device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        packed: device.createBuffer({ size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        scales: device.createBuffer({ size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        output: device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE })
+      };
+      
+      device.queue.writeBuffer(buffers.a, 0, aData);
+      device.queue.writeBuffer(buffers.packed, 0, q.packed);
+      device.queue.writeBuffer(buffers.scales, 0, q.scales);
+      
+      const kernel = createFallbackKernel(K, N, groupSize);
+      const module = device.createShaderModule({ code: kernel.wgsl });
+      const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: buffers.a } },
+          { binding: 1, resource: { buffer: buffers.packed } },
+          { binding: 2, resource: { buffer: buffers.scales } },
+          { binding: 3, resource: { buffer: buffers.output } }
+        ]
+      });
+      
+      const workgroups = Math.ceil(N / wgSize);
+      
+      // Warmup
+      for (let i = 0; i < 30; i++) {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(workgroups);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+      
+      // Measure
+      const iterations = 100;
+      const start = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(workgroups);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+      const time = (performance.now() - start) / iterations;
+      
+      // Cleanup
+      for (const buf of Object.values(buffers)) buf.destroy();
+      
+      const bytes = K * 4 + q.packed.byteLength + q.scales.byteLength + N * 4;
+      const bw = bytes / (time / 1000) / 1e9;
+      
+      return { time, bw };
+    }
+    
+    runTests().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

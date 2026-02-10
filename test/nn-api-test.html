@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Neural Network API Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .loss { color: #60a5fa; }
+    .epoch { color: #fbbf24; }
+  </style>
+</head>
+<body>
+  <h1>Neural Network API Test</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { nn, optim, Tensor, init, backward, mseLoss } from '../src/nn.js';
+    
+    const log = (msg, cls = null) => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+      console.log(msg);
+    };
+    
+    async function testTensorOps() {
+      log('=== Test 1: Tensor Operations ===\n');
+      
+      // Create tensors
+      const a = Tensor.from([1, 2, 3, 4], [2, 2]);
+      log(`a = [[1, 2], [3, 4]]`);
+      log(`  shape: [${a.shape}]`);
+      log(`  data: [${Array.from(a._data)}]`);
+      
+      const b = Tensor.from([5, 6, 7, 8], [2, 2]);
+      log(`\nb = [[5, 6], [7, 8]]`);
+      
+      // Test operations
+      const sum = await a.add(b);
+      log(`\na + b = [${Array.from(sum._data)}]`);
+      const expectedSum = [6, 8, 10, 12];
+      const sumPass = expectedSum.every((v, i) => Math.abs(sum._data[i] - v) < 0.01);
+      log(`  Expected: [${expectedSum}] ${sumPass ? '✓' : '✗'}`, sumPass ? 'pass' : 'fail');
+      
+      const prod = await a.mul(b);
+      log(`\na * b = [${Array.from(prod._data)}]`);
+      const expectedProd = [5, 12, 21, 32];
+      const prodPass = expectedProd.every((v, i) => Math.abs(prod._data[i] - v) < 0.01);
+      log(`  Expected: [${expectedProd}] ${prodPass ? '✓' : '✗'}`, prodPass ? 'pass' : 'fail');
+      
+      // Test activations
+      const x = Tensor.from([-1, 0, 1, 2], [4]);
+      const reluResult = await x.relu();
+      log(`\nReLU([-1, 0, 1, 2]) = [${Array.from(reluResult._data)}]`);
+      const expectedRelu = [0, 0, 1, 2];
+      const reluPass = expectedRelu.every((v, i) => Math.abs(reluResult._data[i] - v) < 0.01);
+      log(`  Expected: [${expectedRelu}] ${reluPass ? '✓' : '✗'}`, reluPass ? 'pass' : 'fail');
+      
+      const sigmoidResult = await x.sigmoid();
+      log(`\nSigmoid([-1, 0, 1, 2]) = [${Array.from(sigmoidResult._data).map(v => v.toFixed(3))}]`);
+      const expectedSigmoid = [0.269, 0.5, 0.731, 0.881];
+      const sigPass = expectedSigmoid.every((v, i) => Math.abs(sigmoidResult._data[i] - v) < 0.01);
+      log(`  Expected: [${expectedSigmoid}] ${sigPass ? '✓' : '✗'}`, sigPass ? 'pass' : 'fail');
+      
+      // Test matmul
+      const A = Tensor.from([1, 2, 3, 4, 5, 6], [2, 3]);
+      const B = Tensor.from([1, 2, 3, 4, 5, 6], [3, 2]);
+      const C = await A.matmul(B);
+      log(`\nMatMul([2,3] @ [3,2]) = [${Array.from(C._data)}]`);
+      // [[1,2,3], [4,5,6]] @ [[1,2], [3,4], [5,6]] = [[22,28], [49,64]]
+      const expectedMatmul = [22, 28, 49, 64];
+      const matmulPass = expectedMatmul.every((v, i) => Math.abs(C._data[i] - v) < 0.01);
+      log(`  Expected: [${expectedMatmul}] ${matmulPass ? '✓' : '✗'}`, matmulPass ? 'pass' : 'fail');
+      
+      // Test reductions
+      const t = Tensor.from([1, 2, 3, 4], [2, 2]);
+      const sumAll = await t.sum();
+      log(`\nSum([[1,2], [3,4]]) = ${sumAll._data[0]}`);
+      const sumAllPass = Math.abs(sumAll._data[0] - 10) < 0.01;
+      log(`  Expected: 10 ${sumAllPass ? '✓' : '✗'}`, sumAllPass ? 'pass' : 'fail');
+      
+      const meanAll = await t.mean();
+      log(`Mean([[1,2], [3,4]]) = ${meanAll._data[0]}`);
+      const meanAllPass = Math.abs(meanAll._data[0] - 2.5) < 0.01;
+      log(`  Expected: 2.5 ${meanAllPass ? '✓' : '✗'}`, meanAllPass ? 'pass' : 'fail');
+      
+      const allPass = sumPass && prodPass && reluPass && sigPass && matmulPass && sumAllPass && meanAllPass;
+      log(`\n${allPass ? 'All tensor ops PASS ✓' : 'Some tests FAILED ✗'}`, allPass ? 'pass' : 'fail');
+      
+      return allPass;
+    }
+    
+    async function testLinearRegression() {
+      log('\n\n=== Test 2: Linear Regression Training ===\n');
+      log('Learning y = 2*x + 1\n');
+      
+      // Training data
+      const X = Tensor.from([0, 1, 2, 3], [4, 1]);
+      const Y = Tensor.from([1, 3, 5, 7], [4, 1]);
+      
+      // Parameters with requiresGrad
+      const W = Tensor.from([0.5], [1, 1], { requiresGrad: true, name: 'weight' });
+      const b = Tensor.from([0.0], [1], { requiresGrad: true, name: 'bias' });
+      
+      log(`Initial: W = ${W._data[0].toFixed(4)}, b = ${b._data[0].toFixed(4)}`);
+      
+      const lr = 0.1;
+      const epochs = 100;
+      
+      for (let epoch = 0; epoch < epochs; epoch++) {
+        // Forward: pred = X * W + b
+        const pred = await X.matmul(W);
+        
+        // Add bias (broadcast)
+        for (let i = 0; i < pred._data.length; i++) {
+          pred._data[i] += b._data[0];
+        }
+        
+        // MSE Loss
+        let loss = 0;
+        const dPred = new Float32Array(pred._data.length);
+        for (let i = 0; i < pred._data.length; i++) {
+          const diff = pred._data[i] - Y._data[i];
+          loss += diff * diff;
+          dPred[i] = 2 * diff / pred._data.length;
+        }
+        loss /= pred._data.length;
+        
+        // Manual backward
+        // dL/dW = X^T @ dPred
+        let dW = 0;
+        for (let i = 0; i < X._data.length; i++) {
+          dW += X._data[i] * dPred[i];
+        }
+        
+        // dL/db = sum(dPred)
+        let db = 0;
+        for (let i = 0; i < dPred.length; i++) {
+          db += dPred[i];
+        }
+        
+        // Update
+        W._data[0] -= lr * dW;
+        b._data[0] -= lr * db;
+        
+        if (epoch % 20 === 0 || epoch === epochs - 1) {
+          log(`  Epoch ${epoch}: loss=${loss.toFixed(4)}, W=${W._data[0].toFixed(4)}, b=${b._data[0].toFixed(4)}`, 'epoch');
+        }
+      }
+      
+      const wPass = Math.abs(W._data[0] - 2.0) < 0.1;
+      const bPass = Math.abs(b._data[0] - 1.0) < 0.1;
+      
+      log(`\nFinal: W = ${W._data[0].toFixed(4)} (target: 2.0), b = ${b._data[0].toFixed(4)} (target: 1.0)`);
+      log(`${wPass && bPass ? 'Linear regression PASS ✓' : 'FAILED ✗'}`, wPass && bPass ? 'pass' : 'fail');
+      
+      return wPass && bPass;
+    }
+    
+    async function testXORWithOptimizer() {
+      log('\n\n=== Test 3: XOR with Adam Optimizer ===\n');
+      log('Network: 2 -> 4 (tanh) -> 1 (sigmoid)\n');
+      
+      // XOR data
+      const inputs = [
+        [0, 0], [0, 1], [1, 0], [1, 1]
+      ];
+      const targets = [0, 1, 1, 0];
+      
+      // Initialize parameters
+      const W1 = Tensor.xavier([2, 4], { requiresGrad: true, name: 'W1' });
+      const b1 = Tensor.zeros([4], { requiresGrad: true, name: 'b1' });
+      const W2 = Tensor.xavier([4, 1], { requiresGrad: true, name: 'W2' });
+      const b2 = Tensor.zeros([1], { requiresGrad: true, name: 'b2' });
+      
+      // Create optimizer
+      const optimizer = new optim.Adam([W1, b1, W2, b2], 0.1);
+      
+      log(`Parameters: ${W1.size + b1.size + W2.size + b2.size}`);
+      
+      const epochs = 500;
+      
+      for (let epoch = 0; epoch < epochs; epoch++) {
+        let totalLoss = 0;
+        
+        // Zero gradients
+        W1._grad = new Float32Array(W1.size);
+        b1._grad = new Float32Array(b1.size);
+        W2._grad = new Float32Array(W2.size);
+        b2._grad = new Float32Array(b2.size);
+        
+        for (let i = 0; i < inputs.length; i++) {
+          const x = inputs[i];
+          const y = targets[i];
+          
+          // Forward pass
+          // h = tanh(x @ W1 + b1)
+          const z1 = new Float32Array(4);
+          for (let j = 0; j < 4; j++) {
+            z1[j] = x[0] * W1._data[j] + x[1] * W1._data[4 + j] + b1._data[j];
+          }
+          const h = z1.map(z => Math.tanh(z));
+          
+          // out = sigmoid(h @ W2 + b2)
+          let z2 = b2._data[0];
+          for (let j = 0; j < 4; j++) {
+            z2 += h[j] * W2._data[j];
+          }
+          const out = 1 / (1 + Math.exp(-z2));
+          
+          // BCE Loss
+          const eps = 1e-7;
+          const loss = -y * Math.log(out + eps) - (1 - y) * Math.log(1 - out + eps);
+          totalLoss += loss;
+          
+          // Backward
+          const dz2 = out - y;
+          
+          for (let j = 0; j < 4; j++) {
+            W2._grad[j] += dz2 * h[j];
+          }
+          b2._grad[0] += dz2;
+          
+          const dh = W2._data.map(w => dz2 * w);
+          const dz1 = dh.map((d, j) => d * (1 - h[j] * h[j]));
+          
+          for (let j = 0; j < 4; j++) {
+            W1._grad[j] += dz1[j] * x[0];
+            W1._grad[4 + j] += dz1[j] * x[1];
+            b1._grad[j] += dz1[j];
+          }
+        }
+        
+        // Average gradients
+        for (let j = 0; j < W1._grad.length; j++) W1._grad[j] /= inputs.length;
+        for (let j = 0; j < b1._grad.length; j++) b1._grad[j] /= inputs.length;
+        for (let j = 0; j < W2._grad.length; j++) W2._grad[j] /= inputs.length;
+        for (let j = 0; j < b2._grad.length; j++) b2._grad[j] /= inputs.length;
+        
+        // Optimizer step
+        await optimizer.step();
+        
+        if (epoch % 100 === 0 || epoch === epochs - 1) {
+          log(`  Epoch ${epoch}: loss=${(totalLoss / inputs.length).toFixed(4)}`, 'epoch');
+        }
+      }
+      
+      // Test
+      log('\nTesting:');
+      let correct = 0;
+      
+      for (let i = 0; i < inputs.length; i++) {
+        const x = inputs[i];
+        const y = targets[i];
+        
+        const z1 = new Float32Array(4);
+        for (let j = 0; j < 4; j++) {
+          z1[j] = x[0] * W1._data[j] + x[1] * W1._data[4 + j] + b1._data[j];
+        }
+        const h = z1.map(z => Math.tanh(z));
+        
+        let z2 = b2._data[0];
+        for (let j = 0; j < 4; j++) {
+          z2 += h[j] * W2._data[j];
+        }
+        const out = 1 / (1 + Math.exp(-z2));
+        const pred = out > 0.5 ? 1 : 0;
+        
+        if (pred === y) correct++;
+        log(`  [${x}] -> ${out.toFixed(4)} (pred: ${pred}, target: ${y}) ${pred === y ? '✓' : '✗'}`, pred === y ? 'pass' : 'fail');
+      }
+      
+      const accuracy = correct / inputs.length;
+      log(`\nAccuracy: ${correct}/${inputs.length} = ${(accuracy * 100).toFixed(0)}%`);
+      log(`${accuracy === 1 ? 'XOR PASS ✓' : 'XOR FAILED ✗'}`, accuracy === 1 ? 'pass' : 'fail');
+      
+      return accuracy === 1;
+    }
+    
+    async function runAllTests() {
+      log('=== Neural Network API Tests ===\n');
+      
+      try {
+        await init();
+        log('✓ Runtime initialized\n');
+        
+        const test1 = await testTensorOps();
+        const test2 = await testLinearRegression();
+        const test3 = await testXORWithOptimizer();
+        
+        log('\n\n=== Summary ===');
+        log(`Test 1 (Tensor Ops): ${test1 ? 'PASS ✓' : 'FAIL ✗'}`, test1 ? 'pass' : 'fail');
+        log(`Test 2 (Linear Regression): ${test2 ? 'PASS ✓' : 'FAIL ✗'}`, test2 ? 'pass' : 'fail');
+        log(`Test 3 (XOR + Adam): ${test3 ? 'PASS ✓' : 'FAIL ✗'}`, test3 ? 'pass' : 'fail');
+        
+        const allPass = test1 && test2 && test3;
+        log(`\n${allPass ? 'ALL TESTS PASSED ✓' : 'SOME TESTS FAILED ✗'}`, allPass ? 'pass' : 'fail');
+        
+      } catch (e) {
+        log(`\nError: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+    
+    runAllTests();
+  </script>
+</body>
+</html>

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MatMul Benchmark - Baseline for INT4 Quantization</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .warn { color: #fbbf24; }
+    .info { color: #60a5fa; }
+    .header { color: #c084fc; font-weight: bold; }
+    table { border-collapse: collapse; margin: 10px 0; }
+    td, th { border: 1px solid #444; padding: 8px; text-align: right; }
+    th { background: #2d2d44; }
+  </style>
+</head>
+<body>
+  <h1>MatMul Benchmark</h1>
+  <p>Establishing baseline performance for INT4 quantization development</p>
+  <pre id="output"></pre>
+  <script type="module">
+    import { GPURuntime } from '../src/runtime.js';
+    import { Codegen } from '../dist/bundle.js';
+    
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    // Helper to convert ReScript tuple to JS array
+    const tupleToArray = (tuple) => [tuple[0], tuple[1], tuple[2]];
+
+    async function benchmarkMatMul(runtime, m, k, n, iterations = 50, warmup = 10) {
+      // Generate kernel
+      const result = Codegen.generate("MatMul", [[m, k], [k, n]]);
+      if (!result) throw new Error(`Failed to generate MatMul kernel for ${m}x${k}x${n}`);
+      const [kernel, dispatch] = result;
+      console.log(kernel.name, JSON.stringify(dispatch));
+      const codegenDispatch = {
+        workgroupSize: tupleToArray(dispatch.workgroupSize),
+        workgroupCount: tupleToArray(dispatch.workgroupCount)
+      };
+
+      // Create random input data
+      const a = new Float32Array(m * k);
+      const b = new Float32Array(k * n);
+      for (let i = 0; i < a.length; i++) a[i] = Math.random() * 2 - 1;
+      for (let i = 0; i < b.length; i++) b[i] = Math.random() * 2 - 1;
+
+      // Warmup
+      for (let i = 0; i < warmup; i++) {
+        await runtime.runOp(kernel, codegenDispatch, a, b);
+      }
+
+      // Benchmark
+      const times = [];
+      for (let i = 0; i < iterations; i++) {
+        const start = performance.now();
+        await runtime.runOp(kernel, codegenDispatch, a, b);
+        const end = performance.now();
+        times.push(end - start);
+      }
+
+      // Calculate stats
+      times.sort((a, b) => a - b);
+      const median = times[Math.floor(times.length / 2)];
+      const mean = times.reduce((a, b) => a + b, 0) / times.length;
+      const min = times[0];
+      const max = times[times.length - 1];
+      const p95 = times[Math.floor(times.length * 0.95)];
+
+      // Calculate FLOPS (2 * M * N * K for matmul)
+      const flops = 2 * m * n * k;
+      const gflops = (flops / (median / 1000)) / 1e9;
+
+      // Memory bandwidth (read A + B, write C)
+      const bytesRead = (m * k + k * n) * 4;
+      const bytesWritten = m * n * 4;
+      const totalBytes = bytesRead + bytesWritten;
+      const bandwidth = (totalBytes / (median / 1000)) / 1e9; // GB/s
+
+      return { m, k, n, median, mean, min, max, p95, gflops, bandwidth, flops, totalBytes };
+    }
+
+    async function runBenchmarks() {
+      log('=== MatMul Benchmark Suite ===\n', 'header');
+      log('Establishing baseline for INT4 quantization development\n');
+
+      const runtime = new GPURuntime();
+      await runtime.init();
+      log('✓ WebGPU Runtime initialized\n', 'pass');
+
+      // Get GPU info
+      const adapter = await navigator.gpu.requestAdapter();
+      const info = adapter.info || { vendor: "Unknown", architecture: "Unknown", description: "" };
+      log(`GPU: ${info.vendor} - ${info.architecture || info.device || 'Unknown'}`, 'info');
+      log(`Driver: ${info.description || 'N/A'}\n`, 'info');
+
+      // Benchmark configurations
+      // These represent typical LLM inference scenarios:
+      // - [1, 4096] x [4096, 4096]: Single token decode (memory bound)
+      // - [1, 4096] x [4096, 11008]: Single token FFN up-projection (Llama-style)
+      // - [512, 4096] x [4096, 4096]: Prefill batch (compute bound)
+      // - [1, 4096] x [4096, 32000]: Vocabulary projection
+      
+      const configs = [
+        // Small (sanity check)
+        { m: 64, k: 64, n: 64, desc: 'Tiny (64x64x64)' },
+        { m: 256, k: 256, n: 256, desc: 'Small (256x256x256)' },
+        
+        // LLM Decode (single token, memory bound)
+        { m: 1, k: 4096, n: 4096, desc: 'Decode: [1,4096]x[4096,4096]' },
+        { m: 1, k: 4096, n: 11008, desc: 'Decode FFN up: [1,4096]x[4096,11008]' },
+        { m: 1, k: 11008, n: 4096, desc: 'Decode FFN down: [1,11008]x[11008,4096]' },
+        
+        // LLM Prefill (batched, compute bound)
+        { m: 128, k: 4096, n: 4096, desc: 'Prefill 128: [128,4096]x[4096,4096]' },
+        { m: 512, k: 4096, n: 4096, desc: 'Prefill 512: [512,4096]x[4096,4096]' },
+        
+        // Attention dimensions (typical 32-head, 128 head_dim)
+        { m: 512, k: 128, n: 512, desc: 'Attention QK^T: [512,128]x[128,512]' },
+        
+        // Vocabulary projection
+        { m: 1, k: 4096, n: 32000, desc: 'Vocab proj: [1,4096]x[4096,32000]' },
+        { m: 1, k: 4096, n: 128256, desc: 'Vocab proj (Llama3): [1,4096]x[4096,128256]' },
+      ];
+
+      log('Running benchmarks (50 iterations each, 10 warmup)...\n');
+
+      const results = [];
+      
+      for (const config of configs) {
+        try {
+          log(`Benchmarking: ${config.desc}...`);
+          const result = await benchmarkMatMul(runtime, config.m, config.k, config.n);
+          result.desc = config.desc;
+          results.push(result);
+          log(`  Median: ${result.median.toFixed(3)}ms | ${result.gflops.toFixed(2)} GFLOPS | ${result.bandwidth.toFixed(2)} GB/s`, 'pass');
+        } catch (e) {
+          log(`  ERROR: ${e.message}`, 'warn');
+          results.push({ ...config, error: e.message });
+        }
+      }
+
+      // Print summary table
+      log('\n\n=== RESULTS SUMMARY ===\n', 'header');
+      log('┌─────────────────────────────────────────┬──────────┬──────────┬──────────┬──────────┐');
+      log('│ Configuration                           │ Median   │ GFLOPS   │ GB/s     │ FLOPS    │');
+      log('├─────────────────────────────────────────┼──────────┼──────────┼──────────┼──────────┤');
+      
+      for (const r of results) {
+        if (r.error) {
+          log(`│ ${r.desc.padEnd(39)} │ ERROR    │          │          │          │`);
+        } else {
+          const desc = r.desc.length > 39 ? r.desc.substring(0, 36) + '...' : r.desc.padEnd(39);
+          const median = r.median.toFixed(2).padStart(6) + 'ms';
+          const gflops = r.gflops.toFixed(1).padStart(6);
+          const bandwidth = r.bandwidth.toFixed(1).padStart(6);
+          const flops = (r.flops / 1e6).toFixed(0).padStart(6) + 'M';
+          log(`│ ${desc} │ ${median} │ ${gflops} │ ${bandwidth} │ ${flops} │`);
+        }
+      }
+      log('└─────────────────────────────────────────┴──────────┴──────────┴──────────┴──────────┘');
+
+      // Analysis
+      log('\n\n=== ANALYSIS ===\n', 'header');
+      
+      const decode = results.find(r => r.desc.includes('Decode:') && !r.error);
+      const prefill = results.find(r => r.desc.includes('Prefill 512') && !r.error);
+      
+      if (decode && prefill) {
+        log(`Decode (M=1) performance: ${decode.gflops.toFixed(2)} GFLOPS, ${decode.bandwidth.toFixed(2)} GB/s`, 'info');
+        log(`Prefill (M=512) performance: ${prefill.gflops.toFixed(2)} GFLOPS, ${prefill.bandwidth.toFixed(2)} GB/s`, 'info');
+        
+        const ratio = prefill.gflops / decode.gflops;
+        log(`\nPrefill/Decode GFLOPS ratio: ${ratio.toFixed(1)}x`, 'info');
+        
+        if (decode.bandwidth > decode.gflops * 2) {
+          log('\n⚠ Decode is MEMORY BOUND (as expected for M=1)', 'warn');
+          log('  INT4 quantization should give ~4x speedup here by reducing memory traffic', 'info');
+        }
+        
+        if (prefill.gflops > prefill.bandwidth * 10) {
+          log('\n✓ Prefill is COMPUTE BOUND (as expected for large M)', 'pass');
+          log('  INT4 quantization benefit depends on dequant overhead vs memory savings', 'info');
+        }
+      }
+
+      // INT4 projection
+      log('\n\n=== INT4 QUANTIZATION PROJECTION ===\n', 'header');
+      
+      if (decode) {
+        const fp32Bytes = decode.totalBytes;
+        const int4Bytes = (decode.m * decode.k + decode.k * decode.n) / 2 + // packed weights
+                          (decode.k * decode.n / 32) * 4 + // scales (1 per group of 32)
+                          decode.m * decode.n * 4; // output still FP32
+        
+        const memoryReduction = fp32Bytes / int4Bytes;
+        log(`FP32 memory per matmul: ${(fp32Bytes / 1024 / 1024).toFixed(2)} MB`, 'info');
+        log(`INT4 memory per matmul: ${(int4Bytes / 1024 / 1024).toFixed(2)} MB`, 'info');
+        log(`Memory reduction: ${memoryReduction.toFixed(2)}x`, 'pass');
+        
+        const theoreticalSpeedup = Math.min(memoryReduction, 4); // Capped by compute overhead
+        log(`\nTheoretical decode speedup: up to ${theoreticalSpeedup.toFixed(1)}x`, 'info');
+        log(`Target decode time: ${(decode.median / theoreticalSpeedup).toFixed(2)}ms`, 'info');
+      }
+
+      runtime.destroy();
+      log('\n\n=== BENCHMARK COMPLETE ===', 'header');
+    }
+
+    runBenchmarks().catch(e => {
+      log(`\nFATAL ERROR: ${e.message}`, 'warn');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

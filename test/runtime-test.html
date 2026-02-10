@@ -1,0 +1,430 @@
+<!-- test/runtime-test.html -->
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebGPU Runtime Test</title>
+</head>
+<body>
+  <h1>WebGPU Runtime Test</h1>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { GPURuntime } from '../src/runtime.js';
+    import { Codegen } from '../dist/bundle.js';
+
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+
+    // Helper to convert ReScript tuple to JS array
+    const tupleToArray = (tuple) => [tuple[0], tuple[1], tuple[2]];
+
+    async function test() {
+      try {
+        // Initialize runtime
+        const runtime = new GPURuntime();
+        await runtime.init();
+        log('✓ Runtime initialized\n');
+
+        // =====================
+        // Test 1: Manual WGSL (baseline)
+        // =====================
+        log('=== Manual WGSL Tests ===');
+        
+        const reluKernel = {
+          name: "relu_test",
+          wgsl: `
+@group(0) @binding(0) var<storage, read> input0: array<f32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= 8u) { return; }
+  output[idx] = max(input0[idx], 0.0);
+}`,
+          bindings: [
+            { binding: 0, size: 32, usage: "ReadOnly", name: "input0" },
+            { binding: 1, size: 32, usage: "ReadWrite", name: "output" }
+          ]
+        };
+
+        const reluDispatch = {
+          workgroupSize: [256, 1, 1],
+          workgroupCount: [1, 1, 1]
+        };
+
+        const reluInput = new Float32Array([-1, 2, -3, 4, -5, 6, -7, 8]);
+        const reluOutput = await runtime.runOp(reluKernel, reluDispatch, reluInput);
+        const reluExpected = [0, 2, 0, 4, 0, 6, 0, 8];
+        const reluPass = reluExpected.every((v, i) => Math.abs(reluOutput[i] - v) < 0.001);
+        log(`ReLU (manual): [${reluInput}] → [${Array.from(reluOutput)}] ${reluPass ? 'PASS ✓' : 'FAIL ✗'}`);
+
+        // =====================
+        // Test 2: Codegen-generated ReLU
+        // =====================
+        log('\n=== Codegen-Generated Tests ===');
+
+        const result = Codegen.generate("ReLU", [[8]]);
+        
+        if (result !== undefined) {
+          const [kernel, dispatch] = result;
+          log(`\nGenerated ReLU kernel: ${kernel.name}`);
+          log(`WGSL preview: ${kernel.wgsl.substring(0, 200)}...`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input = new Float32Array([-1, 2, -3, 4, -5, 6, -7, 8]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          const expected = [0, 2, 0, 4, 0, 6, 0, 8];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.001);
+          log(`ReLU (codegen): [${input}] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('ReLU codegen returned undefined - checking ReScript interop...');
+        }
+
+        // =====================
+        // Test 3: Codegen Add
+        // =====================
+        const addResult = Codegen.generate("Add", [[4], [4]]);
+        
+        if (addResult !== undefined) {
+          const [kernel, dispatch] = addResult;
+          log(`\nGenerated Add kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input0 = new Float32Array([1, 2, 3, 4]);
+          const input1 = new Float32Array([10, 20, 30, 40]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input0, input1);
+          const expected = [11, 22, 33, 44];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.001);
+          log(`Add (codegen): [${input0}] + [${input1}] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Add codegen returned undefined');
+        }
+
+        // =====================
+        // Test 4: Codegen Sigmoid
+        // =====================
+        const sigmoidResult = Codegen.generate("Sigmoid", [[4]]);
+        
+        if (sigmoidResult !== undefined) {
+          const [kernel, dispatch] = sigmoidResult;
+          log(`\nGenerated Sigmoid kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input = new Float32Array([0, 1, -1, 2]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          // sigmoid(0)=0.5, sigmoid(1)≈0.731, sigmoid(-1)≈0.269, sigmoid(2)≈0.881
+          const expected = [0.5, 0.731, 0.269, 0.881];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Sigmoid (codegen): [${input}] → [${Array.from(output).map(x => x.toFixed(3))}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Sigmoid codegen returned undefined');
+        }
+
+        // =====================
+        // Test 5: MatMul
+        // =====================
+        log('\n=== Matrix Operations ===');
+        const matmulResult = Codegen.generate("MatMul", [[2, 3], [3, 2]]);
+        
+        if (matmulResult !== undefined) {
+          const [kernel, dispatch] = matmulResult;
+          log(`Generated MatMul kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          // A = [[1,2,3], [4,5,6]] (2x3)
+          // B = [[1,2], [3,4], [5,6]] (3x2)
+          // Result = [[22,28], [49,64]] (2x2)
+          const a = new Float32Array([1,2,3, 4,5,6]);
+          const b = new Float32Array([1,2, 3,4, 5,6]);
+          const output = await runtime.runOp(kernel, codegenDispatch, a, b);
+          const expected = [22, 28, 49, 64];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`MatMul (2x3 @ 3x2): [[1,2,3],[4,5,6]] @ [[1,2],[3,4],[5,6]] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('MatMul codegen returned undefined');
+        }
+
+        // =====================
+        // Test 6: Reduce Sum
+        // =====================
+        log('\n=== Reduction Operations ===');
+        const reduceResult = Codegen.generate(
+          { TAG: "Reduce", op: "Sum", axes: [1], keepDims: false },
+          [[2, 4]]
+        );
+        
+        if (reduceResult !== undefined) {
+          const [kernel, dispatch] = reduceResult;
+          log(`Generated Reduce Sum kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          // [[1,2,3,4], [5,6,7,8]] sum along axis 1 → [10, 26]
+          const input = new Float32Array([1,2,3,4, 5,6,7,8]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          const expected = [10, 26];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Reduce Sum (axis=1): [[1,2,3,4],[5,6,7,8]] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Reduce Sum codegen returned undefined');
+        }
+
+        // =====================
+        // Test 7: Softmax
+        // =====================
+        log('\n=== Activation Functions ===');
+        const softmaxResult = Codegen.generate(
+          { TAG: "Softmax", axis: -1 },
+          [[2, 3]]
+        );
+        
+        if (softmaxResult !== undefined) {
+          const [kernel, dispatch] = softmaxResult;
+          log(`Generated Softmax kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          // softmax([1,2,3]) ≈ [0.09, 0.24, 0.67]
+          // softmax([1,1,1]) = [0.33, 0.33, 0.33]
+          const input = new Float32Array([1,2,3, 1,1,1]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          
+          // Check that each row sums to 1
+          const sum1 = output[0] + output[1] + output[2];
+          const sum2 = output[3] + output[4] + output[5];
+          const pass = Math.abs(sum1 - 1.0) < 0.01 && Math.abs(sum2 - 1.0) < 0.01;
+          log(`Softmax: [[1,2,3],[1,1,1]] → [[${output[0].toFixed(2)},${output[1].toFixed(2)},${output[2].toFixed(2)}],[${output[3].toFixed(2)},${output[4].toFixed(2)},${output[5].toFixed(2)}]]`);
+          log(`  Row sums: ${sum1.toFixed(3)}, ${sum2.toFixed(3)} ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Softmax codegen returned undefined');
+        }
+
+        // =====================
+        // Test 8: GeLU
+        // =====================
+        const geluResult = Codegen.generate("GeLU", [[4]]);
+        
+        if (geluResult !== undefined) {
+          const [kernel, dispatch] = geluResult;
+          log(`Generated GeLU kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          // GeLU(0) = 0, GeLU(1) ≈ 0.841, GeLU(-1) ≈ -0.159, GeLU(2) ≈ 1.955
+          const input = new Float32Array([0, 1, -1, 2]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          const expected = [0, 0.841, -0.159, 1.955];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.05);
+          log(`GeLU: [${input}] → [${Array.from(output).map(x => x.toFixed(3))}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('GeLU codegen returned undefined');
+        }
+
+        // =====================
+        // Test 9: Tanh
+        // =====================
+        const tanhResult = Codegen.generate("Tanh", [[4]]);
+        
+        if (tanhResult !== undefined) {
+          const [kernel, dispatch] = tanhResult;
+          log(`Generated Tanh kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          // tanh(0) = 0, tanh(1) ≈ 0.762, tanh(-1) ≈ -0.762, tanh(2) ≈ 0.964
+          const input = new Float32Array([0, 1, -1, 2]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          const expected = [0, 0.762, -0.762, 0.964];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Tanh: [${input}] → [${Array.from(output).map(x => x.toFixed(3))}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Tanh codegen returned undefined');
+        }
+
+        // =====================
+        // Test 10: Mul (element-wise)
+        // =====================
+        log('\n=== Binary Operations ===');
+        const mulResult = Codegen.generate("Mul", [[4], [4]]);
+        
+        if (mulResult !== undefined) {
+          const [kernel, dispatch] = mulResult;
+          log(`Generated Mul kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input0 = new Float32Array([1, 2, 3, 4]);
+          const input1 = new Float32Array([2, 3, 4, 5]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input0, input1);
+          const expected = [2, 6, 12, 20];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Mul: [${input0}] * [${input1}] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Mul codegen returned undefined');
+        }
+
+        // =====================
+        // Test 11: Sub
+        // =====================
+        const subResult = Codegen.generate("Sub", [[4], [4]]);
+        
+        if (subResult !== undefined) {
+          const [kernel, dispatch] = subResult;
+          log(`Generated Sub kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input0 = new Float32Array([10, 20, 30, 40]);
+          const input1 = new Float32Array([1, 2, 3, 4]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input0, input1);
+          const expected = [9, 18, 27, 36];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Sub: [${input0}] - [${input1}] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Sub codegen returned undefined');
+        }
+
+        // =====================
+        // Test 12: Maximum
+        // =====================
+        const maxResult = Codegen.generate("Maximum", [[4], [4]]);
+        
+        if (maxResult !== undefined) {
+          const [kernel, dispatch] = maxResult;
+          log(`Generated Maximum kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input0 = new Float32Array([1, 5, 3, 8]);
+          const input1 = new Float32Array([2, 3, 4, 5]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input0, input1);
+          const expected = [2, 5, 4, 8];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Maximum: max([${input0}], [${input1}]) → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Maximum codegen returned undefined');
+        }
+
+        // =====================
+        // Test 13: Neg
+        // =====================
+        log('\n=== Unary Operations ===');
+        const negResult = Codegen.generate("Neg", [[4]]);
+        
+        if (negResult !== undefined) {
+          const [kernel, dispatch] = negResult;
+          log(`Generated Neg kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input = new Float32Array([1, -2, 3, -4]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          const expected = [-1, 2, -3, 4];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Neg: -[${input}] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Neg codegen returned undefined');
+        }
+
+        // =====================
+        // Test 14: Exp
+        // =====================
+        const expResult = Codegen.generate("Exp", [[4]]);
+        
+        if (expResult !== undefined) {
+          const [kernel, dispatch] = expResult;
+          log(`Generated Exp kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input = new Float32Array([0, 1, 2, -1]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          const expected = [1, Math.E, Math.E*Math.E, 1/Math.E];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Exp: exp([${input}]) → [${Array.from(output).map(x => x.toFixed(3))}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Exp codegen returned undefined');
+        }
+
+        // =====================
+        // Test 15: Sqrt
+        // =====================
+        const sqrtResult = Codegen.generate("Sqrt", [[4]]);
+        
+        if (sqrtResult !== undefined) {
+          const [kernel, dispatch] = sqrtResult;
+          log(`Generated Sqrt kernel: ${kernel.name}`);
+          
+          const codegenDispatch = {
+            workgroupSize: tupleToArray(dispatch.workgroupSize),
+            workgroupCount: tupleToArray(dispatch.workgroupCount)
+          };
+
+          const input = new Float32Array([1, 4, 9, 16]);
+          const output = await runtime.runOp(kernel, codegenDispatch, input);
+          const expected = [1, 2, 3, 4];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.01);
+          log(`Sqrt: sqrt([${input}]) → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log('Sqrt codegen returned undefined');
+        }
+
+        log('\n=== All tests completed ===');
+        runtime.destroy();
+
+      } catch (e) {
+        log('✗ Error: ' + e.message);
+        console.error(e);
+      }
+    }
+
+    test();
+  </script>
+</body>
+</html>

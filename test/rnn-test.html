@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RNN Operations Test (LSTM, GRU)</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>RNN Operations Test (LSTM, GRU)</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { GPURuntime, GraphExecutor } from '../src/runtime.js';
+    import { Compiler } from '../dist/bundle.js';
+    
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+    
+    async function runTests() {
+      log('=== RNN Operations Tests ===\n');
+      
+      const runtime = new GPURuntime();
+      await runtime.init();
+      log('✓ Runtime initialized\n');
+
+      // Test 1: LSTM Cell
+      log('Test 1: LSTM Cell (single timestep)');
+      try {
+        const graph1 = Compiler.createGraph();
+        const x = Compiler.input(graph1, [2, 4], "input");      // [batch=2, input_size=4]
+        const hPrev = Compiler.input(graph1, [2, 8], "h_prev"); // [batch=2, hidden=8]
+        const cPrev = Compiler.input(graph1, [2, 8], "c_prev"); // [batch=2, hidden=8]
+        
+        const result = Compiler.lstmCell(graph1, x, hPrev, cPrev, 8, "lstm");
+        Compiler.markOutput(graph1, result.h);
+        Compiler.markOutput(graph1, result.c);
+        
+        const compiled1 = Compiler.compile(graph1);
+        log(`  Compiled: ${compiled1.ops.length} ops, ${compiled1.buffers.length} buffers`);
+        log(`  Weights: ${compiled1.weightNames.join(', ')}`);
+        
+        const executor1 = new GraphExecutor(runtime, compiled1);
+        await executor1.init();
+        
+        // Initialize with random-ish weights
+        const weights = {};
+        for (const name of compiled1.weightNames) {
+          const size = compiled1.buffers.find((b, i) => 
+            compiled1.weightBufferIds.includes(i) && 
+            compiled1.weightNames[compiled1.weightBufferIds.indexOf(i)] === name
+          )?.size / 4 || 32;
+          weights[name] = new Float32Array(size).fill(0.1);
+        }
+        await executor1.loadWeights(weights);
+        
+        // Run with sample inputs
+        const inputX = new Float32Array(8).fill(1.0);  // [2, 4]
+        const inputH = new Float32Array(16).fill(0.0); // [2, 8]
+        const inputC = new Float32Array(16).fill(0.0); // [2, 8]
+        
+        const outputs1 = await executor1.execute(inputX, inputH, inputC);
+        log(`  Input x: [1, 1, 1, ...] (8 values)`);
+        log(`  Input h_prev: zeros`);
+        log(`  Input c_prev: zeros`);
+        
+        if (Array.isArray(outputs1)) {
+          log(`  Output h: [${Array.from(outputs1[0]).slice(0, 4).map(v => v.toFixed(4))}...]`);
+          log(`  Output c: [${Array.from(outputs1[1]).slice(0, 4).map(v => v.toFixed(4))}...]`);
+        } else {
+          log(`  Output: [${Array.from(outputs1).slice(0, 4).map(v => v.toFixed(4))}...]`);
+        }
+        log(`  PASS ✓ (LSTM cell executed)\n`);
+        executor1.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 2: GRU Cell
+      log('Test 2: GRU Cell (single timestep)');
+      try {
+        const graph2 = Compiler.createGraph();
+        const x2 = Compiler.input(graph2, [2, 4], "input");     // [batch=2, input_size=4]
+        const hPrev2 = Compiler.input(graph2, [2, 8], "h_prev"); // [batch=2, hidden=8]
+        
+        const hNew = Compiler.gruCell(graph2, x2, hPrev2, 8, "gru");
+        Compiler.markOutput(graph2, hNew);
+        
+        const compiled2 = Compiler.compile(graph2);
+        log(`  Compiled: ${compiled2.ops.length} ops, ${compiled2.buffers.length} buffers`);
+        log(`  Weights: ${compiled2.weightNames.join(', ')}`);
+        
+        const executor2 = new GraphExecutor(runtime, compiled2);
+        await executor2.init();
+        
+        // Initialize weights
+        const weights2 = {};
+        for (const name of compiled2.weightNames) {
+          weights2[name] = new Float32Array(128).fill(0.1);
+        }
+        await executor2.loadWeights(weights2);
+        
+        const inputX2 = new Float32Array(8).fill(1.0);
+        const inputH2 = new Float32Array(16).fill(0.0);
+        
+        const output2 = await executor2.execute(inputX2, inputH2);
+        log(`  Input x: [1, 1, 1, ...] (8 values)`);
+        log(`  Input h_prev: zeros`);
+        log(`  Output h: [${Array.from(output2).slice(0, 4).map(v => v.toFixed(4))}...]`);
+        log(`  PASS ✓ (GRU cell executed)\n`);
+        executor2.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 3: Full LSTM (sequence)
+      log('Test 3: LSTM (full sequence)');
+      try {
+        const graph3 = Compiler.createGraph();
+        const x3 = Compiler.input(graph3, [1, 4, 3], "input");  // [batch=1, seq_len=4, input_size=3]
+        
+        const out3 = Compiler.lstm(graph3, x3, 5, "lstm_seq");  // hidden_size=5
+        Compiler.markOutput(graph3, out3);
+        
+        const compiled3 = Compiler.compile(graph3);
+        log(`  Input shape: [1, 4, 3] (batch=1, seq=4, features=3)`);
+        log(`  Hidden size: 5`);
+        log(`  Compiled: ${compiled3.ops.length} ops (unrolled over 4 timesteps)`);
+        log(`  Weights: ${compiled3.weightNames.length} weight tensors`);
+        log(`  PASS ✓ (LSTM sequence compiled)\n`);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 4: Full GRU (sequence)
+      log('Test 4: GRU (full sequence)');
+      try {
+        const graph4 = Compiler.createGraph();
+        const x4 = Compiler.input(graph4, [1, 4, 3], "input");  // [batch=1, seq_len=4, input_size=3]
+        
+        const out4 = Compiler.gru(graph4, x4, 5, "gru_seq");  // hidden_size=5
+        Compiler.markOutput(graph4, out4);
+        
+        const compiled4 = Compiler.compile(graph4);
+        log(`  Input shape: [1, 4, 3] (batch=1, seq=4, features=3)`);
+        log(`  Hidden size: 5`);
+        log(`  Compiled: ${compiled4.ops.length} ops (unrolled over 4 timesteps)`);
+        log(`  Weights: ${compiled4.weightNames.length} weight tensors`);
+        log(`  PASS ✓ (GRU sequence compiled)\n`);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      runtime.destroy();
+      log('=== All RNN Tests Completed ===');
+    }
+    
+    runTests();
+  </script>
+</body>
+</html>

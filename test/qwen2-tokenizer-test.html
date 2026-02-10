@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Qwen2.5 Tokenizer Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; max-height: 400px; overflow-y: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+    button:disabled { background: #666; cursor: not-allowed; }
+    textarea {
+      width: 100%;
+      height: 100px;
+      font-family: monospace;
+      font-size: 14px;
+      padding: 10px;
+      border-radius: 5px;
+      border: 1px solid #444;
+      background: #1e293b;
+      color: #eee;
+      margin: 10px 0;
+    }
+    .file-inputs {
+      background: #1e293b;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 10px 0;
+    }
+    .file-inputs label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #94a3b8;
+    }
+    .token-display {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin: 10px 0;
+    }
+    .token {
+      background: #3b82f6;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+    .token.special {
+      background: #f59e0b;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔤 Qwen2.5 Tokenizer Test</h1>
+  
+  <div class="file-inputs">
+    <p>Load tokenizer files from your Qwen2.5 model folder:</p>
+    <label>vocab.json:</label>
+    <input type="file" id="vocabFile" accept=".json" />
+    
+    <label>merges.txt:</label>
+    <input type="file" id="mergesFile" accept=".txt" />
+    
+    <label>tokenizer.json (optional, for special tokens):</label>
+    <input type="file" id="tokenizerJsonFile" accept=".json" />
+    
+    <br><br>
+    <button onclick="loadTokenizer()">Load Tokenizer</button>
+  </div>
+  
+  <div id="testSection" style="display: none;">
+    <h3>Test Encoding/Decoding</h3>
+    <textarea id="inputText" placeholder="Enter text to tokenize...">Hello, how are you today?</textarea>
+    <button onclick="testEncode()">Encode</button>
+    <button onclick="testChatTemplate()">Apply Chat Template</button>
+    
+    <h4>Token IDs:</h4>
+    <pre id="tokenIds"></pre>
+    
+    <h4>Tokens (visual):</h4>
+    <div id="tokenVisual" class="token-display"></div>
+    
+    <h4>Decoded Text:</h4>
+    <pre id="decodedText"></pre>
+  </div>
+  
+  <pre id="output"></pre>
+  
+  <script src="qwen2-tokenizer.js"></script>
+  <script>
+    let tokenizer = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+    
+    async function loadTokenizer() {
+      clear();
+      
+      const vocabFile = document.getElementById('vocabFile').files[0];
+      const mergesFile = document.getElementById('mergesFile').files[0];
+      const tokenizerJsonFile = document.getElementById('tokenizerJsonFile').files[0];
+      
+      if (!vocabFile || !mergesFile) {
+        log('❌ Please select both vocab.json and merges.txt', 'fail');
+        return;
+      }
+      
+      log('=== Loading Qwen2.5 Tokenizer ===\n', 'header');
+      
+      try {
+        log(`Loading vocab.json (${(vocabFile.size / 1024).toFixed(1)} KB)...`, 'info');
+        log(`Loading merges.txt (${(mergesFile.size / 1024).toFixed(1)} KB)...`, 'info');
+        
+        tokenizer = await loadTokenizerFromFiles(vocabFile, mergesFile, tokenizerJsonFile);
+        
+        log(`\n✅ Tokenizer loaded!`, 'pass');
+        log(`   Vocabulary size: ${tokenizer.vocabSize}`, 'info');
+        log(`   Merge rules: ${tokenizer.bpeRanks.size}`, 'info');
+        log(`   Special tokens: ${Object.keys(tokenizer.specialTokens).length}`, 'info');
+        
+        // Show special tokens
+        log('\nSpecial tokens:', 'header');
+        for (const [token, id] of Object.entries(tokenizer.specialTokens).slice(0, 10)) {
+          log(`  ${token} → ${id}`);
+        }
+        if (Object.keys(tokenizer.specialTokens).length > 10) {
+          log(`  ... and ${Object.keys(tokenizer.specialTokens).length - 10} more`);
+        }
+        
+        // Run basic tests
+        log('\n--- Basic Tests ---\n', 'header');
+        
+        const testCases = [
+          'Hello',
+          'Hello, world!',
+          'The quick brown fox jumps over the lazy dog.',
+          '你好世界',
+          'def hello_world():\n    print("Hello!")',
+          '1234567890',
+          '<|im_start|>user\nHello<|im_end|>',
+        ];
+        
+        for (const text of testCases) {
+          const ids = tokenizer.encode(text);
+          const decoded = tokenizer.decode(ids, { skipSpecialTokens: false });
+          const match = text === decoded;
+          
+          log(`"${text.slice(0, 30)}${text.length > 30 ? '...' : ''}"`, 'info');
+          log(`  Tokens: [${ids.slice(0, 10).join(', ')}${ids.length > 10 ? ', ...' : ''}] (${ids.length} tokens)`);
+          log(`  Round-trip: ${match ? '✅' : '❌'}`, match ? 'pass' : 'fail');
+        }
+        
+        // Show test section
+        document.getElementById('testSection').style.display = 'block';
+        
+        log('\n✅ Ready for testing!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+    
+    function testEncode() {
+      if (!tokenizer) {
+        log('❌ Load tokenizer first', 'fail');
+        return;
+      }
+      
+      const text = document.getElementById('inputText').value;
+      const ids = tokenizer.encode(text);
+      const decoded = tokenizer.decode(ids, { skipSpecialTokens: false });
+      
+      // Show token IDs
+      document.getElementById('tokenIds').textContent = `[${ids.join(', ')}]\n\nLength: ${ids.length} tokens`;
+      
+      // Show visual tokens
+      const visual = document.getElementById('tokenVisual');
+      visual.innerHTML = '';
+      
+      for (const id of ids) {
+        const span = document.createElement('span');
+        span.className = 'token';
+        
+        // Check if special token
+        if (tokenizer.specialTokensReverse[id]) {
+          span.className += ' special';
+          span.textContent = tokenizer.specialTokensReverse[id];
+        } else {
+          const token = tokenizer.vocabReverse[id] || `[${id}]`;
+          // Try to decode single token for display
+          try {
+            const decoded = tokenizer.decode([id], { skipSpecialTokens: true });
+            span.textContent = decoded || token;
+            span.title = `ID: ${id}, Raw: ${token}`;
+          } catch {
+            span.textContent = token;
+          }
+        }
+        
+        visual.appendChild(span);
+      }
+      
+      // Show decoded
+      document.getElementById('decodedText').textContent = decoded;
+    }
+    
+    function testChatTemplate() {
+      if (!tokenizer) {
+        log('❌ Load tokenizer first', 'fail');
+        return;
+      }
+      
+      const userMessage = document.getElementById('inputText').value;
+      
+      const messages = [
+        { role: 'system', content: 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.' },
+        { role: 'user', content: userMessage },
+      ];
+      
+      // Get text version
+      const text = tokenizer.applyChatTemplate(messages, { tokenize: false });
+      
+      // Get tokenized version
+      const ids = tokenizer.applyChatTemplate(messages, { tokenize: true });
+      
+      // Display
+      document.getElementById('tokenIds').textContent = 
+        `Chat Template Text:\n${text}\n\nToken IDs: [${ids.slice(0, 20).join(', ')}${ids.length > 20 ? ', ...' : ''}]\n\nTotal: ${ids.length} tokens`;
+      
+      // Show visual tokens
+      const visual = document.getElementById('tokenVisual');
+      visual.innerHTML = '';
+      
+      for (const id of ids) {
+        const span = document.createElement('span');
+        span.className = 'token';
+        
+        if (tokenizer.specialTokensReverse[id]) {
+          span.className += ' special';
+          span.textContent = tokenizer.specialTokensReverse[id];
+        } else {
+          try {
+            const decoded = tokenizer.decode([id], { skipSpecialTokens: true });
+            span.textContent = decoded || `[${id}]`;
+          } catch {
+            span.textContent = `[${id}]`;
+          }
+        }
+        
+        visual.appendChild(span);
+      }
+      
+      document.getElementById('decodedText').textContent = tokenizer.decode(ids, { skipSpecialTokens: false });
+    }
+  </script>
+</body>
+</html>

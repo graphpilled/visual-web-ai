@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head><title>Debug WGSL</title></head>
+<body>
+  <pre id="output"></pre>
+  <script type="module">
+    import { Compiler } from '../dist/bundle.js';
+
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+
+    // Test 2: Chained ops
+    log('=== Test 2: ReLU -> Sigmoid ===\n');
+    const graph2 = Compiler.createGraph();
+    const x2 = Compiler.input(graph2, [4], "input");
+    const r2 = Compiler.relu(graph2, x2);
+    const y2 = Compiler.sigmoid(graph2, r2);
+    const compiled2 = Compiler.compile(graph2, [y2]);
+
+    log('Op 0 (ReLU):');
+    log('  Name: ' + compiled2.ops[0].kernel.name);
+    log('  WGSL:\n' + compiled2.ops[0].kernel.wgsl);
+    
+    log('\n\nOp 1 (Sigmoid):');
+    log('  Name: ' + compiled2.ops[1].kernel.name);
+    log('  WGSL:\n' + compiled2.ops[1].kernel.wgsl);
+
+    log('\n\nAre WGSLs the same? ' + (compiled2.ops[0].kernel.wgsl === compiled2.ops[1].kernel.wgsl));
+  </script>
+</body>
+</html>

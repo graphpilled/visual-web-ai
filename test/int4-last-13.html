@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>INT4 - Last 13%</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>INT4 - Hunting the Last 13%</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    function quantizeTransposed(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const packed = new Uint32Array(packedK * N);
+      const scales = new Float32Array(numGroups * N);
+      for (let i = 0; i < packed.length; i++) packed[i] = Math.random() * 0xFFFFFFFF >>> 0;
+      for (let i = 0; i < scales.length; i++) scales[i] = Math.random() * 0.1;
+      return { packed, scales, packedK, numGroups };
+    }
+
+    // Test 1: Pure weight read (no activation, no compute)
+    function createPureWeightRead(K, N, groupSize) {
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const PACKED_K = ${packedK}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0u;
+  for (var i = 0u; i < PACKED_K; i++) {
+    sum += b_packed[i * N + col];
+  }
+  output[col] = f32(sum);
+}`;
+    }
+
+    // Test 2: Weight read + dequant (no activation multiply)
+    function createWeightDequant(K, N, groupSize) {
+      const packedK = Math.ceil(K / 8);
+      const numGroups = Math.ceil(K / groupSize);
+      return `
+@group(0) @binding(0) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(1) var<storage, read> scales: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+const NUM_GROUPS = ${numGroups}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  for (var i = 0u; i < PACKED_K; i++) {
+    let p = b_packed[i * N + col];
+    let g = (i * 8u) / GROUP_SIZE;
+    let s = scales[g * N + col];
+    sum += (f32((p >> 0u) & 0xFu) - 8.0) * s;
+    sum += (f32((p >> 4u) & 0xFu) - 8.0) * s;
+    sum += (f32((p >> 8u) & 0xFu) - 8.0) * s;
+    sum += (f32((p >> 12u) & 0xFu) - 8.0) * s;
+    sum += (f32((p >> 16u) & 0xFu) - 8.0) * s;
+    sum += (f32((p >> 20u) & 0xFu) - 8.0) * s;
+    sum += (f32((p >> 24u) & 0xFu) - 8.0) * s;
+    sum += (f32((p >> 28u) & 0xFu) - 8.0) * s;
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // Test 3: Full matmul V13 (our best)
+    function createV13(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 8u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[group_idx * N + col];
+    let p0 = b_packed[packed_idx * N + col];
+    let p1 = b_packed[(packed_idx + 1u) * N + col];
+    let p2 = b_packed[(packed_idx + 2u) * N + col];
+    let p3 = b_packed[(packed_idx + 3u) * N + col];
+    let p4 = b_packed[(packed_idx + 4u) * N + col];
+    let p5 = b_packed[(packed_idx + 5u) * N + col];
+    let p6 = b_packed[(packed_idx + 6u) * N + col];
+    let p7 = b_packed[(packed_idx + 7u) * N + col];
+    let a0 = a[k_base/4u]; let a1 = a[k_base/4u+1u]; let a2 = a[k_base/4u+2u]; let a3 = a[k_base/4u+3u];
+    let a4 = a[k_base/4u+4u]; let a5 = a[k_base/4u+5u]; let a6 = a[k_base/4u+6u]; let a7 = a[k_base/4u+7u];
+    let a8 = a[k_base/4u+8u]; let a9 = a[k_base/4u+9u]; let a10 = a[k_base/4u+10u]; let a11 = a[k_base/4u+11u];
+    let a12 = a[k_base/4u+12u]; let a13 = a[k_base/4u+13u]; let a14 = a[k_base/4u+14u]; let a15 = a[k_base/4u+15u];
+    sum += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a4, vec4<f32>(f32((p2>>0u)&0xFu)-8.0, f32((p2>>4u)&0xFu)-8.0, f32((p2>>8u)&0xFu)-8.0, f32((p2>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a5, vec4<f32>(f32((p2>>16u)&0xFu)-8.0, f32((p2>>20u)&0xFu)-8.0, f32((p2>>24u)&0xFu)-8.0, f32((p2>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a6, vec4<f32>(f32((p3>>0u)&0xFu)-8.0, f32((p3>>4u)&0xFu)-8.0, f32((p3>>8u)&0xFu)-8.0, f32((p3>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a7, vec4<f32>(f32((p3>>16u)&0xFu)-8.0, f32((p3>>20u)&0xFu)-8.0, f32((p3>>24u)&0xFu)-8.0, f32((p3>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a8, vec4<f32>(f32((p4>>0u)&0xFu)-8.0, f32((p4>>4u)&0xFu)-8.0, f32((p4>>8u)&0xFu)-8.0, f32((p4>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a9, vec4<f32>(f32((p4>>16u)&0xFu)-8.0, f32((p4>>20u)&0xFu)-8.0, f32((p4>>24u)&0xFu)-8.0, f32((p4>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a10, vec4<f32>(f32((p5>>0u)&0xFu)-8.0, f32((p5>>4u)&0xFu)-8.0, f32((p5>>8u)&0xFu)-8.0, f32((p5>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a11, vec4<f32>(f32((p5>>16u)&0xFu)-8.0, f32((p5>>20u)&0xFu)-8.0, f32((p5>>24u)&0xFu)-8.0, f32((p5>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a12, vec4<f32>(f32((p6>>0u)&0xFu)-8.0, f32((p6>>4u)&0xFu)-8.0, f32((p6>>8u)&0xFu)-8.0, f32((p6>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a13, vec4<f32>(f32((p6>>16u)&0xFu)-8.0, f32((p6>>20u)&0xFu)-8.0, f32((p6>>24u)&0xFu)-8.0, f32((p6>>28u)&0xFu)-8.0) * scale);
+    sum += dot(a14, vec4<f32>(f32((p7>>0u)&0xFu)-8.0, f32((p7>>4u)&0xFu)-8.0, f32((p7>>8u)&0xFu)-8.0, f32((p7>>12u)&0xFu)-8.0) * scale);
+    sum += dot(a15, vec4<f32>(f32((p7>>16u)&0xFu)-8.0, f32((p7>>20u)&0xFu)-8.0, f32((p7>>24u)&0xFu)-8.0, f32((p7>>28u)&0xFu)-8.0) * scale);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V16: Precompute (val - 8) as integer, multiply by scale once per vec4
+    function createV16(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+const NUM_GROUPS = ${numGroups}u;
+
+// Precomputed offsets
+const OFF = vec4<f32>(-8.0, -8.0, -8.0, -8.0);
+
+fn extract_lo(p: u32) -> vec4<f32> {
+  return vec4<f32>(
+    f32((p >> 0u) & 0xFu),
+    f32((p >> 4u) & 0xFu),
+    f32((p >> 8u) & 0xFu),
+    f32((p >> 12u) & 0xFu)
+  ) + OFF;
+}
+
+fn extract_hi(p: u32) -> vec4<f32> {
+  return vec4<f32>(
+    f32((p >> 16u) & 0xFu),
+    f32((p >> 20u) & 0xFu),
+    f32((p >> 24u) & 0xFu),
+    f32((p >> 28u) & 0xFu)
+  ) + OFF;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 8u) {
+    let k_base = packed_idx * 8u;
+    let g = k_base / GROUP_SIZE;
+    let s = scales[g * N + col];
+    
+    let p0 = b_packed[packed_idx * N + col];
+    let p1 = b_packed[(packed_idx + 1u) * N + col];
+    let p2 = b_packed[(packed_idx + 2u) * N + col];
+    let p3 = b_packed[(packed_idx + 3u) * N + col];
+    let p4 = b_packed[(packed_idx + 4u) * N + col];
+    let p5 = b_packed[(packed_idx + 5u) * N + col];
+    let p6 = b_packed[(packed_idx + 6u) * N + col];
+    let p7 = b_packed[(packed_idx + 7u) * N + col];
+    
+    let a0 = a[k_base/4u]; let a1 = a[k_base/4u+1u]; let a2 = a[k_base/4u+2u]; let a3 = a[k_base/4u+3u];
+    let a4 = a[k_base/4u+4u]; let a5 = a[k_base/4u+5u]; let a6 = a[k_base/4u+6u]; let a7 = a[k_base/4u+7u];
+    let a8 = a[k_base/4u+8u]; let a9 = a[k_base/4u+9u]; let a10 = a[k_base/4u+10u]; let a11 = a[k_base/4u+11u];
+    let a12 = a[k_base/4u+12u]; let a13 = a[k_base/4u+13u]; let a14 = a[k_base/4u+14u]; let a15 = a[k_base/4u+15u];
+    
+    sum += dot(a0, extract_lo(p0)) * s + dot(a1, extract_hi(p0)) * s;
+    sum += dot(a2, extract_lo(p1)) * s + dot(a3, extract_hi(p1)) * s;
+    sum += dot(a4, extract_lo(p2)) * s + dot(a5, extract_hi(p2)) * s;
+    sum += dot(a6, extract_lo(p3)) * s + dot(a7, extract_hi(p3)) * s;
+    sum += dot(a8, extract_lo(p4)) * s + dot(a9, extract_hi(p4)) * s;
+    sum += dot(a10, extract_lo(p5)) * s + dot(a11, extract_hi(p5)) * s;
+    sum += dot(a12, extract_lo(p6)) * s + dot(a13, extract_hi(p6)) * s;
+    sum += dot(a14, extract_lo(p7)) * s + dot(a15, extract_hi(p7)) * s;
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V17: Use vec4<u32> to load 4 packed weights at once
+    function createV17(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 4u) {
+    let k_base = packed_idx * 8u;
+    let g = k_base / GROUP_SIZE;
+    let s = scales[g * N + col];
+    
+    // Load 4 packed u32s
+    let p0 = b_packed[packed_idx * N + col];
+    let p1 = b_packed[(packed_idx + 1u) * N + col];
+    let p2 = b_packed[(packed_idx + 2u) * N + col];
+    let p3 = b_packed[(packed_idx + 3u) * N + col];
+    
+    // Load 8 activation vec4s (for 32 weights from 4 packed)
+    let a0 = a[k_base/4u]; let a1 = a[k_base/4u+1u];
+    let a2 = a[k_base/4u+2u]; let a3 = a[k_base/4u+3u];
+    let a4 = a[k_base/4u+4u]; let a5 = a[k_base/4u+5u];
+    let a6 = a[k_base/4u+6u]; let a7 = a[k_base/4u+7u];
+    
+    // Extract and compute
+    let d0 = dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0));
+    let d1 = dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0));
+    let d2 = dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0));
+    let d3 = dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0));
+    let d4 = dot(a4, vec4<f32>(f32((p2>>0u)&0xFu)-8.0, f32((p2>>4u)&0xFu)-8.0, f32((p2>>8u)&0xFu)-8.0, f32((p2>>12u)&0xFu)-8.0));
+    let d5 = dot(a5, vec4<f32>(f32((p2>>16u)&0xFu)-8.0, f32((p2>>20u)&0xFu)-8.0, f32((p2>>24u)&0xFu)-8.0, f32((p2>>28u)&0xFu)-8.0));
+    let d6 = dot(a6, vec4<f32>(f32((p3>>0u)&0xFu)-8.0, f32((p3>>4u)&0xFu)-8.0, f32((p3>>8u)&0xFu)-8.0, f32((p3>>12u)&0xFu)-8.0));
+    let d7 = dot(a7, vec4<f32>(f32((p3>>16u)&0xFu)-8.0, f32((p3>>20u)&0xFu)-8.0, f32((p3>>24u)&0xFu)-8.0, f32((p3>>28u)&0xFu)-8.0));
+    
+    sum += (d0 + d1 + d2 + d3 + d4 + d5 + d6 + d7) * s;
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V18: Try smaller workgroup for better occupancy
+    function createV18(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 8u) {
+    let k_base = packed_idx * 8u;
+    let g = k_base / GROUP_SIZE;
+    let s = scales[g * N + col];
+    let p0 = b_packed[packed_idx * N + col];
+    let p1 = b_packed[(packed_idx + 1u) * N + col];
+    let p2 = b_packed[(packed_idx + 2u) * N + col];
+    let p3 = b_packed[(packed_idx + 3u) * N + col];
+    let p4 = b_packed[(packed_idx + 4u) * N + col];
+    let p5 = b_packed[(packed_idx + 5u) * N + col];
+    let p6 = b_packed[(packed_idx + 6u) * N + col];
+    let p7 = b_packed[(packed_idx + 7u) * N + col];
+    let a0 = a[k_base/4u]; let a1 = a[k_base/4u+1u]; let a2 = a[k_base/4u+2u]; let a3 = a[k_base/4u+3u];
+    let a4 = a[k_base/4u+4u]; let a5 = a[k_base/4u+5u]; let a6 = a[k_base/4u+6u]; let a7 = a[k_base/4u+7u];
+    let a8 = a[k_base/4u+8u]; let a9 = a[k_base/4u+9u]; let a10 = a[k_base/4u+10u]; let a11 = a[k_base/4u+11u];
+    let a12 = a[k_base/4u+12u]; let a13 = a[k_base/4u+13u]; let a14 = a[k_base/4u+14u]; let a15 = a[k_base/4u+15u];
+    sum += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0) * s);
+    sum += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0) * s);
+    sum += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0) * s);
+    sum += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0) * s);
+    sum += dot(a4, vec4<f32>(f32((p2>>0u)&0xFu)-8.0, f32((p2>>4u)&0xFu)-8.0, f32((p2>>8u)&0xFu)-8.0, f32((p2>>12u)&0xFu)-8.0) * s);
+    sum += dot(a5, vec4<f32>(f32((p2>>16u)&0xFu)-8.0, f32((p2>>20u)&0xFu)-8.0, f32((p2>>24u)&0xFu)-8.0, f32((p2>>28u)&0xFu)-8.0) * s);
+    sum += dot(a6, vec4<f32>(f32((p3>>0u)&0xFu)-8.0, f32((p3>>4u)&0xFu)-8.0, f32((p3>>8u)&0xFu)-8.0, f32((p3>>12u)&0xFu)-8.0) * s);
+    sum += dot(a7, vec4<f32>(f32((p3>>16u)&0xFu)-8.0, f32((p3>>20u)&0xFu)-8.0, f32((p3>>24u)&0xFu)-8.0, f32((p3>>28u)&0xFu)-8.0) * s);
+    sum += dot(a8, vec4<f32>(f32((p4>>0u)&0xFu)-8.0, f32((p4>>4u)&0xFu)-8.0, f32((p4>>8u)&0xFu)-8.0, f32((p4>>12u)&0xFu)-8.0) * s);
+    sum += dot(a9, vec4<f32>(f32((p4>>16u)&0xFu)-8.0, f32((p4>>20u)&0xFu)-8.0, f32((p4>>24u)&0xFu)-8.0, f32((p4>>28u)&0xFu)-8.0) * s);
+    sum += dot(a10, vec4<f32>(f32((p5>>0u)&0xFu)-8.0, f32((p5>>4u)&0xFu)-8.0, f32((p5>>8u)&0xFu)-8.0, f32((p5>>12u)&0xFu)-8.0) * s);
+    sum += dot(a11, vec4<f32>(f32((p5>>16u)&0xFu)-8.0, f32((p5>>20u)&0xFu)-8.0, f32((p5>>24u)&0xFu)-8.0, f32((p5>>28u)&0xFu)-8.0) * s);
+    sum += dot(a12, vec4<f32>(f32((p6>>0u)&0xFu)-8.0, f32((p6>>4u)&0xFu)-8.0, f32((p6>>8u)&0xFu)-8.0, f32((p6>>12u)&0xFu)-8.0) * s);
+    sum += dot(a13, vec4<f32>(f32((p6>>16u)&0xFu)-8.0, f32((p6>>20u)&0xFu)-8.0, f32((p6>>24u)&0xFu)-8.0, f32((p6>>28u)&0xFu)-8.0) * s);
+    sum += dot(a14, vec4<f32>(f32((p7>>0u)&0xFu)-8.0, f32((p7>>4u)&0xFu)-8.0, f32((p7>>8u)&0xFu)-8.0, f32((p7>>12u)&0xFu)-8.0) * s);
+    sum += dot(a15, vec4<f32>(f32((p7>>16u)&0xFu)-8.0, f32((p7>>20u)&0xFu)-8.0, f32((p7>>24u)&0xFu)-8.0, f32((p7>>28u)&0xFu)-8.0) * s);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // V19: Accumulate dot products then multiply by scale once
+    function createV19(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 8u) {
+    let k_base = packed_idx * 8u;
+    let g = k_base / GROUP_SIZE;
+    let s = scales[g * N + col];
+    
+    let p0 = b_packed[packed_idx * N + col];
+    let p1 = b_packed[(packed_idx + 1u) * N + col];
+    let p2 = b_packed[(packed_idx + 2u) * N + col];
+    let p3 = b_packed[(packed_idx + 3u) * N + col];
+    let p4 = b_packed[(packed_idx + 4u) * N + col];
+    let p5 = b_packed[(packed_idx + 5u) * N + col];
+    let p6 = b_packed[(packed_idx + 6u) * N + col];
+    let p7 = b_packed[(packed_idx + 7u) * N + col];
+    
+    let a0 = a[k_base/4u]; let a1 = a[k_base/4u+1u]; let a2 = a[k_base/4u+2u]; let a3 = a[k_base/4u+3u];
+    let a4 = a[k_base/4u+4u]; let a5 = a[k_base/4u+5u]; let a6 = a[k_base/4u+6u]; let a7 = a[k_base/4u+7u];
+    let a8 = a[k_base/4u+8u]; let a9 = a[k_base/4u+9u]; let a10 = a[k_base/4u+10u]; let a11 = a[k_base/4u+11u];
+    let a12 = a[k_base/4u+12u]; let a13 = a[k_base/4u+13u]; let a14 = a[k_base/4u+14u]; let a15 = a[k_base/4u+15u];
+    
+    // Accumulate all dot products, then scale once
+    var acc = 0.0;
+    acc += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0));
+    acc += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0));
+    acc += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0));
+    acc += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0));
+    acc += dot(a4, vec4<f32>(f32((p2>>0u)&0xFu)-8.0, f32((p2>>4u)&0xFu)-8.0, f32((p2>>8u)&0xFu)-8.0, f32((p2>>12u)&0xFu)-8.0));
+    acc += dot(a5, vec4<f32>(f32((p2>>16u)&0xFu)-8.0, f32((p2>>20u)&0xFu)-8.0, f32((p2>>24u)&0xFu)-8.0, f32((p2>>28u)&0xFu)-8.0));
+    acc += dot(a6, vec4<f32>(f32((p3>>0u)&0xFu)-8.0, f32((p3>>4u)&0xFu)-8.0, f32((p3>>8u)&0xFu)-8.0, f32((p3>>12u)&0xFu)-8.0));
+    acc += dot(a7, vec4<f32>(f32((p3>>16u)&0xFu)-8.0, f32((p3>>20u)&0xFu)-8.0, f32((p3>>24u)&0xFu)-8.0, f32((p3>>28u)&0xFu)-8.0));
+    acc += dot(a8, vec4<f32>(f32((p4>>0u)&0xFu)-8.0, f32((p4>>4u)&0xFu)-8.0, f32((p4>>8u)&0xFu)-8.0, f32((p4>>12u)&0xFu)-8.0));
+    acc += dot(a9, vec4<f32>(f32((p4>>16u)&0xFu)-8.0, f32((p4>>20u)&0xFu)-8.0, f32((p4>>24u)&0xFu)-8.0, f32((p4>>28u)&0xFu)-8.0));
+    acc += dot(a10, vec4<f32>(f32((p5>>0u)&0xFu)-8.0, f32((p5>>4u)&0xFu)-8.0, f32((p5>>8u)&0xFu)-8.0, f32((p5>>12u)&0xFu)-8.0));
+    acc += dot(a11, vec4<f32>(f32((p5>>16u)&0xFu)-8.0, f32((p5>>20u)&0xFu)-8.0, f32((p5>>24u)&0xFu)-8.0, f32((p5>>28u)&0xFu)-8.0));
+    acc += dot(a12, vec4<f32>(f32((p6>>0u)&0xFu)-8.0, f32((p6>>4u)&0xFu)-8.0, f32((p6>>8u)&0xFu)-8.0, f32((p6>>12u)&0xFu)-8.0));
+    acc += dot(a13, vec4<f32>(f32((p6>>16u)&0xFu)-8.0, f32((p6>>20u)&0xFu)-8.0, f32((p6>>24u)&0xFu)-8.0, f32((p6>>28u)&0xFu)-8.0));
+    acc += dot(a14, vec4<f32>(f32((p7>>0u)&0xFu)-8.0, f32((p7>>4u)&0xFu)-8.0, f32((p7>>8u)&0xFu)-8.0, f32((p7>>12u)&0xFu)-8.0));
+    acc += dot(a15, vec4<f32>(f32((p7>>16u)&0xFu)-8.0, f32((p7>>20u)&0xFu)-8.0, f32((p7>>24u)&0xFu)-8.0, f32((p7>>28u)&0xFu)-8.0));
+    
+    sum += acc * s;
+  }
+  output[col] = sum;
+}`;
+    }
+
+    async function benchmark() {
+      log('=== INT4 - Hunting the Last 13% ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      const K = 4096, N = 11008, GROUP_SIZE = 128;
+      const q = quantizeTransposed(K, N, GROUP_SIZE);
+      
+      log(`Matrix: [1, ${K}] x [${K}, ${N}]`);
+      log(`Total data: ${((q.packed.byteLength + q.scales.byteLength + K * 4) / 1024 / 1024).toFixed(2)} MB\n`);
+      
+      // Benchmark helper
+      async function bench(name, shaderCode, bindings, wgSize = 256) {
+        const buffers = [];
+        const entries = [];
+        
+        for (let i = 0; i < bindings.length; i++) {
+          const b = bindings[i];
+          const buf = device.createBuffer({ size: b.size, usage: b.usage });
+          if (b.data) device.queue.writeBuffer(buf, 0, b.data);
+          buffers.push(buf);
+          entries.push({ binding: i, resource: { buffer: buf } });
+        }
+        
+        const module = device.createShaderModule({ code: shaderCode });
+        const pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+        
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries
+        });
+        
+        const workgroups = Math.ceil(N / wgSize);
+        const iterations = 50;
+        
+        for (let i = 0; i < 10; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const time = (performance.now() - start) / iterations;
+        
+        for (const buf of buffers) buf.destroy();
+        
+        return time;
+      }
+      
+      // 1. Pure weight read baseline
+      log('--- Overhead Analysis ---\n', 'header');
+      
+      const pureReadTime = await bench('Pure Read', createPureWeightRead(K, N, GROUP_SIZE), [
+        { size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: q.packed },
+        { size: N * 4, usage: GPUBufferUsage.STORAGE }
+      ]);
+      const pureReadBw = q.packed.byteLength / (pureReadTime / 1000) / 1e9;
+      log(`1. Pure weight read:   ${pureReadTime.toFixed(2)}ms | ${pureReadBw.toFixed(2)} GB/s (CEILING)`);
+      
+      // 2. Weight + dequant
+      const dequantTime = await bench('Dequant', createWeightDequant(K, N, GROUP_SIZE), [
+        { size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: q.packed },
+        { size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: q.scales },
+        { size: N * 4, usage: GPUBufferUsage.STORAGE }
+      ]);
+      log(`2. Weight + dequant:   ${dequantTime.toFixed(2)}ms (dequant cost: ${(dequantTime - pureReadTime).toFixed(2)}ms)`);
+      
+      // 3. Full V13 baseline
+      const aData = new Float32Array(K).fill(0.1);
+      const v13Time = await bench('V13', createV13(K, N, GROUP_SIZE), [
+        { size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: aData },
+        { size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: q.packed },
+        { size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: q.scales },
+        { size: N * 4, usage: GPUBufferUsage.STORAGE }
+      ]);
+      const v13Bw = (K * 4 + q.packed.byteLength + q.scales.byteLength) / (v13Time / 1000) / 1e9;
+      log(`3. V13 (baseline):     ${v13Time.toFixed(2)}ms | ${v13Bw.toFixed(2)} GB/s`);
+      log(`   Dot product cost:   ${(v13Time - dequantTime).toFixed(2)}ms`);
+      
+      log('\n--- New Optimizations ---\n', 'header');
+      
+      const fullBindings = [
+        { size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: aData },
+        { size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: q.packed },
+        { size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, data: q.scales },
+        { size: N * 4, usage: GPUBufferUsage.STORAGE }
+      ];
+      
+      const v16Time = await bench('V16', createV16(K, N, GROUP_SIZE), fullBindings);
+      const v16Bw = (K * 4 + q.packed.byteLength + q.scales.byteLength) / (v16Time / 1000) / 1e9;
+      log(`4. V16 (extract fn):   ${v16Time.toFixed(2)}ms | ${v16Bw.toFixed(2)} GB/s`, v16Time < v13Time ? 'pass' : '');
+      
+      const v17Time = await bench('V17', createV17(K, N, GROUP_SIZE), fullBindings);
+      const v17Bw = (K * 4 + q.packed.byteLength + q.scales.byteLength) / (v17Time / 1000) / 1e9;
+      log(`5. V17 (4 pack):       ${v17Time.toFixed(2)}ms | ${v17Bw.toFixed(2)} GB/s`, v17Time < v13Time ? 'pass' : '');
+      
+      const v18Time = await bench('V18', createV18(K, N, GROUP_SIZE), fullBindings, 64);
+      const v18Bw = (K * 4 + q.packed.byteLength + q.scales.byteLength) / (v18Time / 1000) / 1e9;
+      log(`6. V18 (wg=64):        ${v18Time.toFixed(2)}ms | ${v18Bw.toFixed(2)} GB/s`, v18Time < v13Time ? 'pass' : '');
+      
+      const v19Time = await bench('V19', createV19(K, N, GROUP_SIZE), fullBindings);
+      const v19Bw = (K * 4 + q.packed.byteLength + q.scales.byteLength) / (v19Time / 1000) / 1e9;
+      log(`7. V19 (acc then mul): ${v19Time.toFixed(2)}ms | ${v19Bw.toFixed(2)} GB/s`, v19Time < v13Time ? 'pass' : '');
+      
+      // Find best
+      const times = [
+        { name: 'V13', time: v13Time, bw: v13Bw },
+        { name: 'V16', time: v16Time, bw: v16Bw },
+        { name: 'V17', time: v17Time, bw: v17Bw },
+        { name: 'V18', time: v18Time, bw: v18Bw },
+        { name: 'V19', time: v19Time, bw: v19Bw },
+      ];
+      
+      const best = times.reduce((a, b) => a.time < b.time ? a : b);
+      
+      log('\n--- Summary ---', 'header');
+      log(`\nBest: ${best.name} @ ${best.time.toFixed(2)}ms (${best.bw.toFixed(2)} GB/s)`);
+      log(`Ceiling: ${pureReadTime.toFixed(2)}ms (${pureReadBw.toFixed(2)} GB/s)`);
+      log(`Gap: ${(best.time - pureReadTime).toFixed(2)}ms (${((best.time / pureReadTime - 1) * 100).toFixed(1)}% overhead)`);
+      log(`Efficiency: ${(pureReadBw / best.bw * (q.packed.byteLength / (K * 4 + q.packed.byteLength + q.scales.byteLength)) * 100).toFixed(1)}%`);
+    }
+    
+    benchmark().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

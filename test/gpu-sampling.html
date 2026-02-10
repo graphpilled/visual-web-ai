@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GPU Sampling Test - Top-K & Top-P</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; max-height: 600px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    .warn { color: #fbbf24; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+    button:disabled { background: #666; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <h1>🎲 GPU Sampling Test - Top-K & Top-P</h1>
+  <p>Tests GPU-based rejection sampling for LLM inference with proper top-k and top-p filtering.</p>
+  <div>
+    <button onclick="runTests()" id="btnTests">Run All Tests</button>
+    <button onclick="runTopKTest()" id="btnTopK">Test Top-K</button>
+    <button onclick="runTopPTest()" id="btnTopP">Test Top-P</button>
+    <button onclick="runBenchmark()" id="btnBench">Benchmark</button>
+  </div>
+  <pre id="output"></pre>
+
+  <script src="gpu-sampling.js"></script>
+  <script>
+    let device = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+
+    async function initWebGPU() {
+      if (device) return device;
+      if (!navigator.gpu) throw new Error('WebGPU not supported');
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error('No GPU adapter');
+      device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: 1024 * 1024 * 1024,
+        }
+      });
+      log('✅ WebGPU initialized', 'pass');
+      return device;
+    }
+
+    // Create test logits buffer
+    function createLogitsBuffer(device, logits) {
+      const buffer = device.createBuffer({
+        size: logits.length * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true
+      });
+      new Float32Array(buffer.getMappedRange()).set(logits);
+      buffer.unmap();
+      return buffer;
+    }
+    
+    // Create logits with specific "hot" tokens
+    function createTestLogits(vocabSize, hotIndices, hotValue = 10, coldValue = -10) {
+      const logits = new Float32Array(vocabSize);
+      logits.fill(coldValue);
+      for (const idx of hotIndices) {
+        if (idx < vocabSize) logits[idx] = hotValue;
+      }
+      return logits;
+    }
+
+    async function runTests() {
+      clear();
+      log('=== GPU Sampling Full Test Suite ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        const vocabSize = 1000;
+        
+        // Test 1: Greedy sampling
+        log('--- Test 1: Greedy Sampling (Argmax) ---', 'header');
+        {
+          const sampler = new GPUSampler(device, vocabSize);
+          await sampler.init();
+          
+          const logits = createTestLogits(vocabSize, [42], 100, 0);
+          const buffer = createLogitsBuffer(device, logits);
+          
+          const result = await sampler.sampleGreedy(buffer);
+          log(`  Hot token: 42 (logit=100, others=0)`);
+          log(`  Argmax result: ${result.tokenId}`);
+          log(`  ${result.tokenId === 42 ? '✅ PASS' : '❌ FAIL'}`, result.tokenId === 42 ? 'pass' : 'fail');
+          
+          buffer.destroy();
+          sampler.destroy();
+        }
+        
+        // Test 2: Basic random sampling (no filtering)
+        log('\n--- Test 2: Random Sampling (No Filtering) ---', 'header');
+        {
+          const sampler = new GPUSampler(device, vocabSize, { 
+            temperature: 1.0, 
+            topK: 0, 
+            topP: 1.0,
+            seed: 12345 
+          });
+          await sampler.init();
+          
+          const logits = createTestLogits(vocabSize, [100, 200, 300], 5, -5);
+          const buffer = createLogitsBuffer(device, logits);
+          
+          const samples = new Map();
+          for (let i = 0; i < 100; i++) {
+            const result = await sampler.sample(buffer);
+            samples.set(result.tokenId, (samples.get(result.tokenId) || 0) + 1);
+          }
+          
+          log(`  Hot tokens: [100, 200, 300]`);
+          const sorted = Array.from(samples.entries()).sort((a, b) => b[1] - a[1]);
+          log(`  Top 5 sampled:`);
+          for (const [id, count] of sorted.slice(0, 5)) {
+            log(`    Token ${id}: ${count}%`);
+          }
+          
+          const hotSampled = [100, 200, 300].filter(id => samples.has(id)).length;
+          log(`  Hot tokens sampled: ${hotSampled}/3`);
+          log(`  ${hotSampled >= 2 ? '✅ PASS' : '❌ FAIL'}`, hotSampled >= 2 ? 'pass' : 'fail');
+          
+          buffer.destroy();
+          sampler.destroy();
+        }
+        
+        // Test 3: Temperature effect
+        log('\n--- Test 3: Temperature Effect ---', 'header');
+        {
+          const samplerLow = new GPUSampler(device, vocabSize, { temperature: 0.1, seed: 11111 });
+          const samplerHigh = new GPUSampler(device, vocabSize, { temperature: 2.0, seed: 11111 });
+          await samplerLow.init();
+          await samplerHigh.init();
+          
+          const logits = createTestLogits(vocabSize, [500, 501, 502], 5, 0);
+          const buffer = createLogitsBuffer(device, logits);
+          
+          // Low temp - should be very peaked
+          const lowSamples = new Map();
+          for (let i = 0; i < 50; i++) {
+            const r = await samplerLow.sample(buffer);
+            lowSamples.set(r.tokenId, (lowSamples.get(r.tokenId) || 0) + 1);
+          }
+          const lowMax = Math.max(...lowSamples.values());
+          
+          // High temp - should be more spread
+          const highSamples = new Map();
+          for (let i = 0; i < 50; i++) {
+            const r = await samplerHigh.sample(buffer);
+            highSamples.set(r.tokenId, (highSamples.get(r.tokenId) || 0) + 1);
+          }
+          const highMax = Math.max(...highSamples.values());
+          
+          log(`  Low temp (0.1): max token count = ${lowMax}/50`);
+          log(`  High temp (2.0): max token count = ${highMax}/50`);
+          log(`  Low temp more peaked: ${lowMax > highMax ? '✅' : '❌'}`);
+          log(`  ${lowMax > highMax ? '✅ PASS' : '⚠️ CHECK'}`, lowMax > highMax ? 'pass' : 'warn');
+          
+          buffer.destroy();
+          samplerLow.destroy();
+          samplerHigh.destroy();
+        }
+        
+        // Test 4: Repetition Penalty
+        log('\n--- Test 4: Repetition Penalty ---', 'header');
+        {
+          const sampler = new GPUSampler(device, vocabSize, { 
+            repetitionPenalty: 2.0,
+            seed: 22222
+          });
+          await sampler.init();
+          
+          // All equal logits
+          const logits = new Float32Array(vocabSize).fill(5);
+          const buffer = createLogitsBuffer(device, logits);
+          
+          const history = [0, 0, 0, 1, 1]; // Heavily penalize tokens 0 and 1
+          
+          const samples = new Map();
+          for (let i = 0; i < 100; i++) {
+            const r = await sampler.sample(buffer, history);
+            samples.set(r.tokenId, (samples.get(r.tokenId) || 0) + 1);
+          }
+          
+          const token0 = samples.get(0) || 0;
+          const token1 = samples.get(1) || 0;
+          const penalizedSum = token0 + token1;
+          
+          log(`  All logits equal, history=[0,0,0,1,1], penalty=2.0`);
+          log(`  Token 0 sampled: ${token0} times`);
+          log(`  Token 1 sampled: ${token1} times`);
+          log(`  Expected: penalized tokens should be rare`);
+          log(`  ${penalizedSum < 30 ? '✅ PASS' : '⚠️ CHECK'}`, penalizedSum < 30 ? 'pass' : 'warn');
+          
+          buffer.destroy();
+          sampler.destroy();
+        }
+        
+        // Test 5: Seeded reproducibility
+        log('\n--- Test 5: Reproducibility (Seeded RNG) ---', 'header');
+        {
+          const seed = 99999;
+          const samplerA = new GPUSampler(device, vocabSize, { seed });
+          const samplerB = new GPUSampler(device, vocabSize, { seed });
+          await samplerA.init();
+          await samplerB.init();
+          
+          const logits = createTestLogits(vocabSize, [10, 20, 30, 40, 50], 5, 0);
+          const buffer = createLogitsBuffer(device, logits);
+          
+          const resultsA = [], resultsB = [];
+          for (let i = 0; i < 10; i++) {
+            resultsA.push((await samplerA.sample(buffer)).tokenId);
+            resultsB.push((await samplerB.sample(buffer)).tokenId);
+          }
+          
+          const identical = resultsA.every((v, i) => v === resultsB[i]);
+          log(`  Seed: ${seed}`);
+          log(`  Run A: [${resultsA.join(', ')}]`);
+          log(`  Run B: [${resultsB.join(', ')}]`);
+          log(`  ${identical ? '✅ PASS' : '❌ FAIL'}`, identical ? 'pass' : 'fail');
+          
+          buffer.destroy();
+          samplerA.destroy();
+          samplerB.destroy();
+        }
+        
+        log('\n✅ Basic tests complete! Run Top-K and Top-P tests separately.', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runTopKTest() {
+      clear();
+      log('=== Top-K Sampling Test ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        const vocabSize = 1000;
+        
+        // Create logits with clear ranking
+        // Token 0 has highest, token 1 second highest, etc.
+        const logits = new Float32Array(vocabSize);
+        for (let i = 0; i < vocabSize; i++) {
+          logits[i] = 10 - i * 0.1; // Descending: 10, 9.9, 9.8, ...
+        }
+        
+        log('Logits: descending from 10 (token 0) to ~-90 (token 999)', 'info');
+        log('Expected: with top_k=N, only tokens 0 to N-1 should be sampled\n');
+        
+        for (const topK of [1, 3, 10, 50]) {
+          log(`--- Top-K = ${topK} ---`, 'header');
+          
+          const sampler = new GPUSampler(device, vocabSize, { 
+            topK, 
+            topP: 1.0,
+            temperature: 1.0,
+            seed: 12345
+          });
+          await sampler.init();
+          
+          const buffer = createLogitsBuffer(device, logits);
+          const samples = new Map();
+          const numSamples = 200;
+          
+          for (let i = 0; i < numSamples; i++) {
+            const r = await sampler.sample(buffer);
+            samples.set(r.tokenId, (samples.get(r.tokenId) || 0) + 1);
+          }
+          
+          // Check: all sampled tokens should be in [0, topK)
+          const sorted = Array.from(samples.entries()).sort((a, b) => a[0] - b[0]);
+          const maxSampledToken = Math.max(...samples.keys());
+          const outsideTopK = Array.from(samples.keys()).filter(id => id >= topK);
+          
+          log(`  Samples: ${numSamples}`);
+          log(`  Unique tokens sampled: ${samples.size}`);
+          log(`  Max token ID: ${maxSampledToken} (should be < ${topK})`);
+          log(`  Tokens outside top-${topK}: [${outsideTopK.join(', ')}]`);
+          
+          if (outsideTopK.length === 0) {
+            log(`  ✅ PASS - All samples within top-${topK}`, 'pass');
+          } else {
+            log(`  ❌ FAIL - ${outsideTopK.length} tokens outside top-${topK}`, 'fail');
+          }
+          
+          // Show distribution
+          log(`  Distribution (top 5):`);
+          const topSamples = Array.from(samples.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5);
+          for (const [id, count] of topSamples) {
+            log(`    Token ${id}: ${count} (${(count/numSamples*100).toFixed(1)}%)`);
+          }
+          
+          buffer.destroy();
+          sampler.destroy();
+          log('');
+        }
+        
+        log('✅ Top-K test complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runTopPTest() {
+      clear();
+      log('=== Top-P (Nucleus) Sampling Test ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        const vocabSize = 100;
+        
+        // Create a specific distribution:
+        // Token 0: prob ~0.5
+        // Token 1: prob ~0.25
+        // Token 2: prob ~0.125
+        // Token 3: prob ~0.0625
+        // ... exponentially decreasing
+        const logits = new Float32Array(vocabSize);
+        for (let i = 0; i < vocabSize; i++) {
+          logits[i] = 10 - i * 1.5; // Creates roughly exponential probs after softmax
+        }
+        
+        log('Logits create roughly exponential probability distribution', 'info');
+        log('Top tokens should dominate with low top_p values\n');
+        
+        for (const topP of [0.5, 0.8, 0.95, 1.0]) {
+          log(`--- Top-P = ${topP} ---`, 'header');
+          
+          const sampler = new GPUSampler(device, vocabSize, { 
+            topK: 0,  // Disabled
+            topP,
+            temperature: 1.0,
+            seed: 54321
+          });
+          await sampler.init();
+          
+          const buffer = createLogitsBuffer(device, logits);
+          const samples = new Map();
+          const numSamples = 300;
+          
+          for (let i = 0; i < numSamples; i++) {
+            const r = await sampler.sample(buffer);
+            samples.set(r.tokenId, (samples.get(r.tokenId) || 0) + 1);
+          }
+          
+          const sorted = Array.from(samples.entries()).sort((a, b) => a[0] - b[0]);
+          const maxSampledToken = Math.max(...samples.keys());
+          
+          log(`  Samples: ${numSamples}`);
+          log(`  Unique tokens sampled: ${samples.size}`);
+          log(`  Max token ID: ${maxSampledToken}`);
+          
+          // For top_p=0.5, should mostly sample token 0
+          // For top_p=0.8, should sample tokens 0-2
+          // For top_p=1.0, can sample anything
+          
+          log(`  Distribution:`);
+          const topSamples = Array.from(samples.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5);
+          for (const [id, count] of topSamples) {
+            log(`    Token ${id}: ${count} (${(count/numSamples*100).toFixed(1)}%)`);
+          }
+          
+          // Heuristic check: lower top_p should result in fewer unique tokens
+          if (topP < 1.0) {
+            const expectedMaxTokens = topP < 0.6 ? 3 : (topP < 0.9 ? 10 : 30);
+            if (samples.size <= expectedMaxTokens) {
+              log(`  ✅ Reasonable diversity for top_p=${topP}`, 'pass');
+            } else {
+              log(`  ⚠️ More tokens than expected (${samples.size} > ${expectedMaxTokens})`, 'warn');
+            }
+          } else {
+            log(`  ℹ️ top_p=1.0 (disabled) - all tokens valid`, 'info');
+          }
+          
+          buffer.destroy();
+          sampler.destroy();
+          log('');
+        }
+        
+        log('✅ Top-P test complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runBenchmark() {
+      clear();
+      log('=== GPU Sampling Benchmark ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        const configs = [
+          { vocabSize: 1000, label: 'Small (1K vocab)' },
+          { vocabSize: 32000, label: 'Medium (32K vocab)' },
+          { vocabSize: 152064, label: 'Qwen2.5 (152K vocab)' }
+        ];
+        
+        for (const { vocabSize, label } of configs) {
+          log(`\n--- ${label} ---`, 'header');
+          
+          const sampler = new GPUSampler(device, vocabSize, {
+            temperature: 0.7,
+            topK: 50,
+            topP: 0.9,
+            seed: 12345
+          });
+          await sampler.init();
+          
+          // Create random logits
+          const logits = new Float32Array(vocabSize);
+          for (let i = 0; i < vocabSize; i++) {
+            logits[i] = Math.random() * 20 - 10;
+          }
+          const buffer = createLogitsBuffer(device, logits);
+          
+          const iterations = 50;
+          
+          // Warmup
+          for (let i = 0; i < 5; i++) {
+            await sampler.sample(buffer);
+          }
+          
+          // Benchmark full sampling
+          let start = performance.now();
+          for (let i = 0; i < iterations; i++) {
+            await sampler.sample(buffer);
+          }
+          const sampleTime = (performance.now() - start) / iterations;
+          
+          // Benchmark greedy
+          start = performance.now();
+          for (let i = 0; i < iterations; i++) {
+            await sampler.sampleGreedy(buffer);
+          }
+          const greedyTime = (performance.now() - start) / iterations;
+          
+          log(`  Greedy (argmax):     ${greedyTime.toFixed(3)} ms`);
+          log(`  Full (top-k + top-p): ${sampleTime.toFixed(3)} ms`);
+          log(`  Data transferred:    4 bytes (just token ID)`);
+          
+          buffer.destroy();
+          sampler.destroy();
+        }
+        
+        log('\n✅ Benchmark complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+  </script>
+</body>
+</html>

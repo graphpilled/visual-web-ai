@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Training Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .loss { color: #60a5fa; }
+  </style>
+</head>
+<body>
+  <h1>Training Test - Linear Regression</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { GPURuntime } from '../src/runtime.js';
+    import { Compiler, Autograd } from '../dist/bundle.js';
+    
+    const log = (msg, cls = null) => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+      console.log(msg);
+    };
+    
+    async function trainLinearRegression() {
+      log('=== Training Test: Linear Regression ===\n');
+      log('Goal: Learn y = 2*x + 1 from data\n');
+      
+      const runtime = new GPURuntime();
+      await runtime.init();
+      log('✓ Runtime initialized\n');
+      
+      // Training data: y = 2*x + 1
+      const numSamples = 4;
+      const xData = new Float32Array([0, 1, 2, 3]);
+      const yData = new Float32Array([1, 3, 5, 7]); // 2*x + 1
+      
+      log('Training data:');
+      log('  X: [0, 1, 2, 3]');
+      log('  Y: [1, 3, 5, 7] (target: y = 2x + 1)\n');
+      
+      // Initialize parameters (random-ish)
+      let weight = 0.5;  // Should converge to 2
+      let bias = 0.0;    // Should converge to 1
+      
+      const lr = 0.1;
+      const epochs = 50;
+      
+      log(`Hyperparameters: lr=${lr}, epochs=${epochs}\n`);
+      log('Training...\n');
+      
+      // Manual gradient descent (to test the backward kernels work)
+      for (let epoch = 0; epoch < epochs; epoch++) {
+        // Forward pass: pred = weight * x + bias
+        const predictions = xData.map(x => weight * x + bias);
+        
+        // Compute MSE loss
+        let loss = 0;
+        for (let i = 0; i < numSamples; i++) {
+          const diff = predictions[i] - yData[i];
+          loss += diff * diff;
+        }
+        loss /= numSamples;
+        
+        // Backward pass (manual gradients for linear regression)
+        // d(MSE)/d(weight) = 2/n * sum((pred - y) * x)
+        // d(MSE)/d(bias) = 2/n * sum(pred - y)
+        let gradWeight = 0;
+        let gradBias = 0;
+        for (let i = 0; i < numSamples; i++) {
+          const diff = predictions[i] - yData[i];
+          gradWeight += diff * xData[i];
+          gradBias += diff;
+        }
+        gradWeight *= 2 / numSamples;
+        gradBias *= 2 / numSamples;
+        
+        // Update parameters
+        weight -= lr * gradWeight;
+        bias -= lr * gradBias;
+        
+        if (epoch % 10 === 0 || epoch === epochs - 1) {
+          log(`  Epoch ${epoch}: loss=${loss.toFixed(4)}, weight=${weight.toFixed(4)}, bias=${bias.toFixed(4)}`, 'loss');
+        }
+      }
+      
+      log('\nFinal parameters:');
+      log(`  weight = ${weight.toFixed(4)} (target: 2.0)`);
+      log(`  bias = ${bias.toFixed(4)} (target: 1.0)`);
+      
+      const weightPass = Math.abs(weight - 2.0) < 0.1;
+      const biasPass = Math.abs(bias - 1.0) < 0.1;
+      
+      log(`\n  ${weightPass && biasPass ? 'PASS ✓ - Parameters converged!' : 'FAIL ✗'}`, weightPass && biasPass ? 'pass' : 'fail');
+      
+      // Now test with GPU backward kernels
+      log('\n\n=== GPU Backward Kernel Test ===\n');
+      
+      // Test Mul backward (for weight gradient)
+      log('Test: Mul backward kernel');
+      const mulKernel = Autograd.genMulBackwardKernel(4);
+      
+      // Forward: z = a * b
+      // grad_a = grad_out * b
+      // grad_b = grad_out * a
+      const gradOut = new Float32Array([1, 1, 1, 1]); // dL/dz
+      const a = new Float32Array([1, 2, 3, 4]);
+      const b = new Float32Array([0.5, 0.5, 0.5, 0.5]); // weight
+      
+      const mulResult = await runtime.execute(mulKernel, { workgroupCount: [1, 1, 1] }, {
+        grad_out: gradOut,
+        a: a,
+        b: b
+      });
+      
+      log(`  grad_a (dL/da): [${Array.from(mulResult.grad_a).map(x => x.toFixed(2))}]`);
+      log(`  grad_b (dL/db): [${Array.from(mulResult.grad_b).map(x => x.toFixed(2))}]`);
+      log(`  Expected grad_b: [${a.join(', ')}] (= a, since grad_out=1)`);
+      
+      const mulPass = Array.from(mulResult.grad_b).every((v, i) => Math.abs(v - a[i]) < 0.01);
+      log(`  ${mulPass ? 'PASS ✓' : 'FAIL ✗'}`, mulPass ? 'pass' : 'fail');
+      
+      // Test SGD optimizer kernel
+      log('\nTest: SGD optimizer kernel');
+      const sgdKernel = Autograd.genSGDKernel(4, 0.1);
+      
+      const params = new Float32Array([1, 2, 3, 4]);
+      const grads = new Float32Array([1, 1, 1, 1]);
+      
+      const sgdResult = await runtime.execute(sgdKernel, { workgroupCount: [1, 1, 1] }, {
+        param: params,
+        grad: grads
+      });
+      
+      const expectedParams = [0.9, 1.9, 2.9, 3.9];
+      log(`  params before: [1, 2, 3, 4]`);
+      log(`  grads: [1, 1, 1, 1]`);
+      log(`  params after: [${Array.from(sgdResult).map(x => x.toFixed(2))}]`);
+      log(`  Expected: [${expectedParams.map(x => x.toFixed(2))}]`);
+      
+      const sgdPass = Array.from(sgdResult).every((v, i) => Math.abs(v - expectedParams[i]) < 0.01);
+      log(`  ${sgdPass ? 'PASS ✓' : 'FAIL ✗'}`, sgdPass ? 'pass' : 'fail');
+      
+      // Test Adam optimizer kernel
+      log('\nTest: Adam optimizer kernel');
+      const adamKernel = Autograd.genAdamKernel(4, 0.001, 0.9, 0.999, 1e-8, 1);
+      
+      const adamResult = await runtime.execute(adamKernel, { workgroupCount: [1, 1, 1] }, {
+        param: new Float32Array([1, 2, 3, 4]),
+        grad: new Float32Array([0.1, 0.1, 0.1, 0.1]),
+        m: new Float32Array(4),
+        v: new Float32Array(4)
+      });
+      
+      log(`  params before: [1, 2, 3, 4]`);
+      log(`  grads: [0.1, 0.1, 0.1, 0.1]`);
+      log(`  params after: [${Array.from(adamResult.param).map(x => x.toFixed(6))}]`);
+      log(`  m (momentum): [${Array.from(adamResult.m).map(x => x.toFixed(6))}]`);
+      log(`  v (variance): [${Array.from(adamResult.v).map(x => x.toFixed(9))}]`);
+      
+      // Adam should update params slightly
+      const adamPass = adamResult.param[0] < 1.0 && adamResult.m[0] > 0;
+      log(`  ${adamPass ? 'PASS ✓' : 'FAIL ✗'}`, adamPass ? 'pass' : 'fail');
+      
+      runtime.destroy();
+      log('\n=== All Training Tests Completed ===');
+    }
+    
+    trainLinearRegression();
+  </script>
+</body>
+</html>

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RMSNorm Optimization</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>RMSNorm Optimization</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    // Original slow version (single thread)
+    function createRMSNormV1(N) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const EPS = 1e-6;
+@compute @workgroup_size(1)
+fn main() {
+  var sum_sq = 0.0;
+  for (var i = 0u; i < N; i++) { sum_sq += input[i] * input[i]; }
+  let rms = sqrt(sum_sq / f32(N) + EPS);
+  for (var i = 0u; i < N; i++) { output[i] = (input[i] / rms) * weight[i]; }
+}`;
+    }
+
+    // V2: Two-pass with parallel reduction
+    function createRMSNormV2(N) {
+      const WORKGROUP_SIZE = 256;
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+@group(0) @binding(3) var<storage, read_write> scratch: array<f32>;  // For partial sums
+
+const N = ${N}u;
+const EPS = 1e-6;
+const WG_SIZE = ${WORKGROUP_SIZE}u;
+
+var<workgroup> shared_sum: array<f32, ${WORKGROUP_SIZE}>;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn reduce(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let tid = lid.x;
+  let gid = wid.x * WG_SIZE + tid;
+  
+  // Each thread sums multiple elements
+  var local_sum = 0.0;
+  for (var i = gid; i < N; i += WG_SIZE) {
+    let val = input[i];
+    local_sum += val * val;
+  }
+  shared_sum[tid] = local_sum;
+  
+  workgroupBarrier();
+  
+  // Parallel reduction in shared memory
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride >>= 1u) {
+    if (tid < stride) {
+      shared_sum[tid] += shared_sum[tid + stride];
+    }
+    workgroupBarrier();
+  }
+  
+  // Thread 0 writes partial sum
+  if (tid == 0u) {
+    scratch[wid.x] = shared_sum[0];
+  }
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn normalize(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= N) { return; }
+  
+  // Read the total sum (computed in first pass)
+  let sum_sq = scratch[0];
+  let rms = sqrt(sum_sq / f32(N) + EPS);
+  
+  output[idx] = (input[idx] / rms) * weight[idx];
+}`;
+    }
+
+    // V3: Single-pass with workgroup reduction (best for small N)
+    function createRMSNormV3(N) {
+      const WORKGROUP_SIZE = Math.min(256, N);
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const N = ${N}u;
+const EPS = 1e-6;
+const WG_SIZE = ${WORKGROUP_SIZE}u;
+
+var<workgroup> shared_sum: array<f32, ${WORKGROUP_SIZE}>;
+var<workgroup> rms_val: f32;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let tid = lid.x;
+  
+  // Each thread sums strided elements
+  var local_sum = 0.0;
+  for (var i = tid; i < N; i += WG_SIZE) {
+    let val = input[i];
+    local_sum += val * val;
+  }
+  shared_sum[tid] = local_sum;
+  
+  workgroupBarrier();
+  
+  // Tree reduction
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride >>= 1u) {
+    if (tid < stride) {
+      shared_sum[tid] += shared_sum[tid + stride];
+    }
+    workgroupBarrier();
+  }
+  
+  // Thread 0 computes RMS
+  if (tid == 0u) {
+    rms_val = sqrt(shared_sum[0] / f32(N) + EPS);
+  }
+  
+  workgroupBarrier();
+  
+  // All threads normalize their elements
+  let rms = rms_val;
+  for (var i = tid; i < N; i += WG_SIZE) {
+    output[i] = (input[i] / rms) * weight[i];
+  }
+}`;
+    }
+
+    // V4: Vectorized with vec4
+    function createRMSNormV4(N) {
+      const N4 = N / 4;
+      const WORKGROUP_SIZE = 256;
+      return `
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> weight: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+
+const N4 = ${N4}u;
+const N = ${N}u;
+const EPS = 1e-6;
+const WG_SIZE = ${WORKGROUP_SIZE}u;
+
+var<workgroup> shared_sum: array<f32, ${WORKGROUP_SIZE}>;
+var<workgroup> rms_val: f32;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let tid = lid.x;
+  
+  // Each thread sums vec4 elements
+  var local_sum = 0.0;
+  for (var i = tid; i < N4; i += WG_SIZE) {
+    let v = input[i];
+    local_sum += dot(v, v);
+  }
+  shared_sum[tid] = local_sum;
+  
+  workgroupBarrier();
+  
+  // Tree reduction
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride >>= 1u) {
+    if (tid < stride) {
+      shared_sum[tid] += shared_sum[tid + stride];
+    }
+    workgroupBarrier();
+  }
+  
+  if (tid == 0u) {
+    rms_val = sqrt(shared_sum[0] / f32(N) + EPS);
+  }
+  
+  workgroupBarrier();
+  
+  let rms = rms_val;
+  for (var i = tid; i < N4; i += WG_SIZE) {
+    output[i] = (input[i] / rms) * weight[i];
+  }
+}`;
+    }
+
+    async function benchmark() {
+      log('=== RMSNorm Optimization ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      
+      const N = 4096;  // hidden_size for 7B
+      
+      log(`Testing RMSNorm for N=${N}\n`);
+      
+      async function benchShader(name, shaderCode, workgroups, iterations = 200) {
+        const buffers = {
+          input: device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          weight: device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          output: device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE }),
+          scratch: device.createBuffer({ size: 256 * 4, usage: GPUBufferUsage.STORAGE })
+        };
+        
+        // Initialize
+        const inputData = new Float32Array(N);
+        for (let i = 0; i < N; i++) inputData[i] = Math.random() - 0.5;
+        device.queue.writeBuffer(buffers.input, 0, inputData);
+        device.queue.writeBuffer(buffers.weight, 0, new Float32Array(N).fill(1));
+        
+        const module = device.createShaderModule({ code: shaderCode });
+        const pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+        
+        const entries = [
+          { binding: 0, resource: { buffer: buffers.input } },
+          { binding: 1, resource: { buffer: buffers.weight } },
+          { binding: 2, resource: { buffer: buffers.output } },
+        ];
+        
+        // Add scratch buffer if needed
+        if (shaderCode.includes('scratch')) {
+          entries.push({ binding: 3, resource: { buffer: buffers.scratch } });
+        }
+        
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries
+        });
+        
+        // Warmup
+        for (let i = 0; i < 20; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Benchmark
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const time = (performance.now() - start) / iterations;
+        
+        // Cleanup
+        for (const buf of Object.values(buffers)) buf.destroy();
+        
+        return time;
+      }
+      
+      // Test each version
+      const v1Time = await benchShader('V1', createRMSNormV1(N), 1);
+      log(`V1 (single thread):     ${v1Time.toFixed(3)}ms`, 'fail');
+      
+      const v3Time = await benchShader('V3', createRMSNormV3(N), 1);
+      log(`V3 (workgroup reduce):  ${v3Time.toFixed(3)}ms`, v3Time < v1Time / 2 ? 'pass' : 'fail');
+      
+      const v4Time = await benchShader('V4', createRMSNormV4(N), 1);
+      log(`V4 (vec4 + reduce):     ${v4Time.toFixed(3)}ms`, v4Time < v3Time ? 'pass' : 'fail');
+      
+      // Summary
+      log('\n--- Results ---', 'header');
+      const best = Math.min(v1Time, v3Time, v4Time);
+      const speedup = v1Time / best;
+      log(`Best: ${best.toFixed(3)}ms`);
+      log(`Speedup: ${speedup.toFixed(1)}x`, speedup > 5 ? 'pass' : 'fail');
+      
+      // Impact on 7B model
+      log('\n--- Impact on 7B Model ---', 'header');
+      const oldRmsPerLayer = v1Time * 2;
+      const newRmsPerLayer = best * 2;
+      const savedPerLayer = oldRmsPerLayer - newRmsPerLayer;
+      const savedTotal = savedPerLayer * 32;
+      
+      log(`Old RMSNorm time: ${oldRmsPerLayer.toFixed(2)}ms/layer`);
+      log(`New RMSNorm time: ${newRmsPerLayer.toFixed(2)}ms/layer`);
+      log(`Saved per layer: ${savedPerLayer.toFixed(2)}ms`);
+      log(`Saved total (32 layers): ${savedTotal.toFixed(1)}ms`, 'pass');
+    }
+    
+    benchmark().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

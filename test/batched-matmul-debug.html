@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Batched MatMul Debug</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Batched MatMul Debug</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { Compiler } from '../dist/bundle.js';
+    
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+    
+    // Test 1: 2D MatMul (should work)
+    log('=== Test 1: 2D MatMul [2,3] @ [3,4] ===');
+    try {
+      const graph1 = Compiler.createGraph();
+      const a1 = Compiler.input(graph1, [2, 3], "a");
+      const b1 = Compiler.input(graph1, [3, 4], "b");
+      log(`  a1 node: ${a1}`);
+      log(`  b1 node: ${b1}`);
+      const y1 = Compiler.matmul(graph1, a1, b1);
+      log(`  y1 node: ${y1}`);
+      Compiler.markOutput(graph1, y1);
+      log(`  Graph nodes: ${graph1.nodes.length}`);
+      const compiled1 = Compiler.compile(graph1);
+      log(`  Compiled: ${compiled1 ? 'yes' : 'no'}`);
+      if (compiled1) {
+        log(`  Kernels: ${compiled1.kernels.length}`);
+        log(`  Buffers: ${compiled1.buffers.length}`);
+        log(`  Kernel name: ${compiled1.kernels[0]?.name}`);
+      }
+    } catch (e) {
+      log(`  ERROR: ${e.message}`);
+      console.error(e);
+    }
+
+    // Test 2: Batched MatMul
+    log('\n=== Test 2: Batched MatMul [2,2,3] @ [2,3,4] ===');
+    try {
+      const graph2 = Compiler.createGraph();
+      const a2 = Compiler.input(graph2, [2, 2, 3], "a");
+      const b2 = Compiler.input(graph2, [2, 3, 4], "b");
+      log(`  a2 node: ${a2}`);
+      log(`  b2 node: ${b2}`);
+      const y2 = Compiler.matmul(graph2, a2, b2);
+      log(`  y2 node: ${y2}`);
+      Compiler.markOutput(graph2, y2);
+      log(`  Graph nodes: ${graph2.nodes.length}`);
+      
+      // Check the matmul node details
+      const matmulNode = graph2.nodes.find(n => n.id === y2);
+      log(`  MatMul node: ${JSON.stringify(matmulNode)}`);
+      
+      const compiled2 = Compiler.compile(graph2);
+      log(`  Compiled: ${compiled2 ? 'yes' : 'no'}`);
+      if (compiled2) {
+        log(`  Kernels: ${compiled2.kernels.length}`);
+        log(`  Buffers: ${compiled2.buffers.length}`);
+        compiled2.kernels.forEach((k, i) => {
+          log(`  Kernel ${i}: ${k.name}`);
+        });
+      } else {
+        log(`  Compilation returned undefined!`);
+      }
+    } catch (e) {
+      log(`  ERROR: ${e.message}`);
+      console.error(e);
+    }
+
+    // Test 3: Check shape inference
+    log('\n=== Test 3: Shape inference check ===');
+    try {
+      const graph3 = Compiler.createGraph();
+      const a3 = Compiler.input(graph3, [2, 2, 3], "a");
+      const b3 = Compiler.input(graph3, [2, 3, 4], "b");
+      const y3 = Compiler.matmul(graph3, a3, b3);
+      
+      // Get output shape
+      const node = graph3.nodes.find(n => n.id === y3);
+      log(`  Node op: ${JSON.stringify(node?.op)}`);
+      log(`  Node inputs: ${JSON.stringify(node?.inputs)}`);
+      
+      // Get input shapes
+      const aNode = graph3.nodes.find(n => n.id === a3);
+      const bNode = graph3.nodes.find(n => n.id === b3);
+      log(`  A shape: ${JSON.stringify(aNode?.op)}`);
+      log(`  B shape: ${JSON.stringify(bNode?.op)}`);
+    } catch (e) {
+      log(`  ERROR: ${e.message}`);
+      console.error(e);
+    }
+  </script>
+</body>
+</html>

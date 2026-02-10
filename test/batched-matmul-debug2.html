@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Batched MatMul Debug 2</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Batched MatMul Debug 2</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { Compiler } from '../dist/bundle.js';
+    
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+    
+    log('=== Test: 2D MatMul [2,3] @ [3,4] ===');
+    try {
+      const graph1 = Compiler.createGraph();
+      const a1 = Compiler.input(graph1, [2, 3], "a");
+      const b1 = Compiler.input(graph1, [3, 4], "b");
+      const y1 = Compiler.matmul(graph1, a1, b1);
+      Compiler.markOutput(graph1, y1);
+      const compiled1 = Compiler.compile(graph1);
+      
+      log(`Compiled object keys: ${Object.keys(compiled1)}`);
+      log(`Compiled object: ${JSON.stringify(compiled1, null, 2).substring(0, 2000)}`);
+    } catch (e) {
+      log(`ERROR: ${e.message}`);
+      console.error(e);
+    }
+  </script>
+</body>
+</html>

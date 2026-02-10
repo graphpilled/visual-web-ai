@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>New Layers Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .info { color: #60a5fa; }
+  </style>
+</head>
+<body>
+  <h1>New Layers Test</h1>
+  <p>Testing Conv2D, LayerNorm, BatchNorm, Embedding, LSTM, GRU</p>
+  <pre id="output"></pre>
+  <script type="module">
+    import { 
+      Tensor, nn, optim, init,
+      Conv2D, MaxPool2D, AvgPool2D, Flatten,
+      LayerNorm, BatchNorm1D, BatchNorm2D,
+      Embedding, LSTM, GRU, LSTMCell, GRUCell,
+      Linear, ReLU, Sequential
+    } from '../src/nn.js';
+    
+    const log = (msg, cls = null) => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+      console.log(msg);
+    };
+    
+    async function testConv2D() {
+      log('=== Test 1: Conv2D ===\n');
+      
+      const conv = new Conv2D(3, 16, 3, { padding: 1 });
+      log(`Conv2D(3, 16, kernel=3, padding=1)`);
+      log(`  weight shape: [${conv.weight.shape}]`);
+      log(`  params: ${conv.numParameters()}`, 'info');
+      
+      // Input: [batch=2, channels=3, height=8, width=8]
+      const x = Tensor.rand([2, 3, 8, 8]);
+      log(`\nInput shape: [${x.shape}]`);
+      
+      const y = await conv.forward(x);
+      log(`Output shape: [${y.shape}]`);
+      
+      // With padding=1 and kernel=3, output should be same spatial size
+      const pass = y.shape[0] === 2 && y.shape[1] === 16 && y.shape[2] === 8 && y.shape[3] === 8;
+      log(`Expected: [2, 16, 8, 8]`);
+      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      
+      return pass;
+    }
+    
+    async function testPooling() {
+      log('\n\n=== Test 2: Pooling Layers ===\n');
+      
+      const x = Tensor.from([
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+        9, 10, 11, 12,
+        13, 14, 15, 16
+      ], [1, 1, 4, 4]);
+      
+      log(`Input [1, 1, 4, 4]:`);
+      log(`  [[ 1,  2,  3,  4],`);
+      log(`   [ 5,  6,  7,  8],`);
+      log(`   [ 9, 10, 11, 12],`);
+      log(`   [13, 14, 15, 16]]`);
+      
+      const maxPool = new MaxPool2D(2);
+      const maxOut = await maxPool.forward(x);
+      log(`\nMaxPool2D(2) -> [${maxOut.shape}]`);
+      log(`  Output: [${maxOut.toArray()}]`);
+      log(`  Expected: [6, 8, 14, 16]`);
+      
+      const avgPool = new AvgPool2D(2);
+      const avgOut = await avgPool.forward(x);
+      log(`\nAvgPool2D(2) -> [${avgOut.shape}]`);
+      log(`  Output: [${avgOut.toArray().map(v => v.toFixed(1))}]`);
+      log(`  Expected: [3.5, 5.5, 11.5, 13.5]`);
+      
+      const maxPass = maxOut._data[0] === 6 && maxOut._data[1] === 8 && maxOut._data[2] === 14 && maxOut._data[3] === 16;
+      const avgPass = Math.abs(avgOut._data[0] - 3.5) < 0.01;
+      
+      log(`\n${maxPass && avgPass ? 'PASS ✓' : 'FAIL ✗'}`, maxPass && avgPass ? 'pass' : 'fail');
+      
+      return maxPass && avgPass;
+    }
+    
+    async function testLayerNorm() {
+      log('\n\n=== Test 3: LayerNorm ===\n');
+      
+      const ln = new LayerNorm(4);
+      log(`LayerNorm(4)`);
+      log(`  gamma: [${ln.gamma.toArray()}]`);
+      log(`  beta: [${ln.beta.toArray()}]`);
+      
+      const x = Tensor.from([[1, 2, 3, 4], [2, 4, 6, 8]], [2, 4]);
+      log(`\nInput: [[1,2,3,4], [2,4,6,8]]`);
+      
+      const y = await ln.forward(x);
+      log(`Output: [${y.toArray().map(v => v.toFixed(3))}]`);
+      
+      // Check that each row is normalized (mean ≈ 0, std ≈ 1)
+      const row0 = [y._data[0], y._data[1], y._data[2], y._data[3]];
+      const mean0 = row0.reduce((a, b) => a + b, 0) / 4;
+      const std0 = Math.sqrt(row0.reduce((a, b) => a + (b - mean0) ** 2, 0) / 4);
+      
+      log(`\nRow 0: mean=${mean0.toFixed(4)}, std=${std0.toFixed(4)}`);
+      log(`Expected: mean≈0, std≈1`);
+      
+      const pass = Math.abs(mean0) < 0.01 && Math.abs(std0 - 1) < 0.01;
+      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      
+      return pass;
+    }
+    
+    async function testBatchNorm() {
+      log('\n\n=== Test 4: BatchNorm1D ===\n');
+      
+      const bn = new BatchNorm1D(4);
+      bn.train(); // Training mode
+      
+      log(`BatchNorm1D(4) in training mode`);
+      
+      const x = Tensor.from([
+        [1, 2, 3, 4],
+        [2, 4, 6, 8],
+        [3, 6, 9, 12],
+        [4, 8, 12, 16]
+      ], [4, 4]);
+      
+      log(`Input [4, 4]: batch of 4 samples, 4 features`);
+      
+      const y = await bn.forward(x);
+      log(`Output shape: [${y.shape}]`);
+      
+      // Check running stats were updated
+      log(`\nRunning mean: [${bn.runningMean.toArray().map(v => v.toFixed(3))}]`);
+      log(`Running var: [${bn.runningVar.toArray().map(v => v.toFixed(3))}]`);
+      
+      const pass = bn.numBatchesTracked === 1 && bn.runningMean._data[0] > 0;
+      log(`Batches tracked: ${bn.numBatchesTracked}`);
+      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      
+      return pass;
+    }
+    
+    async function testEmbedding() {
+      log('\n\n=== Test 5: Embedding ===\n');
+      
+      const embed = new Embedding(100, 32); // vocab=100, dim=32
+      log(`Embedding(100, 32)`);
+      log(`  weight shape: [${embed.weight.shape}]`);
+      log(`  params: ${embed.numParameters()}`, 'info');
+      
+      // Input: batch of 2 sequences, length 5
+      const x = Tensor.from([[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]], [2, 5]);
+      log(`\nInput indices: [2, 5] (batch=2, seq_len=5)`);
+      
+      const y = await embed.forward(x);
+      log(`Output shape: [${y.shape}]`);
+      log(`Expected: [2, 5, 32]`);
+      
+      // Verify first embedding matches weight[0]
+      const firstEmbed = y._data.slice(0, 32);
+      const weightFirst = embed.weight._data.slice(0, 32);
+      const match = firstEmbed.every((v, i) => Math.abs(v - weightFirst[i]) < 0.0001);
+      
+      log(`\nFirst embedding matches weight[0]: ${match}`);
+      
+      const pass = y.shape[0] === 2 && y.shape[1] === 5 && y.shape[2] === 32 && match;
+      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      
+      return pass;
+    }
+    
+    async function testLSTM() {
+      log('\n\n=== Test 6: LSTM ===\n');
+      
+      const lstm = new LSTM(10, 20, { numLayers: 2 });
+      log(`LSTM(input=10, hidden=20, layers=2)`);
+      log(`  params: ${lstm.numParameters()}`, 'info');
+      
+      // Input: [batch=3, seq_len=5, features=10]
+      const x = Tensor.rand([3, 5, 10]);
+      log(`\nInput shape: [${x.shape}]`);
+      
+      const [output, states] = await lstm.forward(x);
+      log(`Output shape: [${output.shape}]`);
+      log(`Expected: [3, 5, 20]`);
+      log(`\nNumber of layer states: ${states.length}`);
+      log(`State shapes: h=[${states[0][0].shape}], c=[${states[0][1].shape}]`);
+      
+      const pass = output.shape[0] === 3 && output.shape[1] === 5 && output.shape[2] === 20 && states.length === 2;
+      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      
+      return pass;
+    }
+    
+    async function testGRU() {
+      log('\n\n=== Test 7: GRU ===\n');
+      
+      const gru = new GRU(10, 20, { numLayers: 1 });
+      log(`GRU(input=10, hidden=20, layers=1)`);
+      log(`  params: ${gru.numParameters()}`, 'info');
+      
+      const x = Tensor.rand([2, 4, 10]);
+      log(`\nInput shape: [${x.shape}]`);
+      
+      const [output, states] = await gru.forward(x);
+      log(`Output shape: [${output.shape}]`);
+      log(`Expected: [2, 4, 20]`);
+      
+      const pass = output.shape[0] === 2 && output.shape[1] === 4 && output.shape[2] === 20;
+      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      
+      return pass;
+    }
+    
+    async function testCNNModel() {
+      log('\n\n=== Test 8: CNN Model (MNIST-style) ===\n');
+      
+      // Build a simple CNN
+      const model = new Sequential(
+        new Conv2D(1, 8, 3, { padding: 1 }),   // [1, 8, 8] -> [8, 8, 8]
+        new ReLU(),
+        new MaxPool2D(2),                       // -> [8, 4, 4]
+        new Conv2D(8, 16, 3, { padding: 1 }),  // -> [16, 4, 4]
+        new ReLU(),
+        new MaxPool2D(2),                       // -> [16, 2, 2]
+        new Flatten(),                          // -> [64]
+        new Linear(64, 10)                      // -> [10]
+      );
+      
+      log(`CNN Architecture:`);
+      log(`  Conv2D(1, 8, 3) -> ReLU -> MaxPool`);
+      log(`  Conv2D(8, 16, 3) -> ReLU -> MaxPool`);
+      log(`  Flatten -> Linear(64, 10)`);
+      log(`\nTotal params: ${model.numParameters()}`, 'info');
+      
+      // Test forward pass with 8x8 "image"
+      const x = Tensor.rand([4, 1, 8, 8]); // batch of 4
+      log(`\nInput: [4, 1, 8, 8] (batch=4, channels=1, 8x8)`);
+      
+      const y = await model.forward(x);
+      log(`Output: [${y.shape}]`);
+      log(`Expected: [4, 10]`);
+      
+      const pass = y.shape[0] === 4 && y.shape[1] === 10;
+      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      
+      return pass;
+    }
+    
+    async function runAllTests() {
+      log('=== New Layers Tests ===\n');
+      
+      try {
+        await init();
+        log('✓ Runtime initialized\n');
+        
+        const test1 = await testConv2D();
+        const test2 = await testPooling();
+        const test3 = await testLayerNorm();
+        const test4 = await testBatchNorm();
+        const test5 = await testEmbedding();
+        const test6 = await testLSTM();
+        const test7 = await testGRU();
+        const test8 = await testCNNModel();
+        
+        log('\n\n=== Summary ===');
+        log(`Test 1 (Conv2D): ${test1 ? 'PASS ✓' : 'FAIL ✗'}`, test1 ? 'pass' : 'fail');
+        log(`Test 2 (Pooling): ${test2 ? 'PASS ✓' : 'FAIL ✗'}`, test2 ? 'pass' : 'fail');
+        log(`Test 3 (LayerNorm): ${test3 ? 'PASS ✓' : 'FAIL ✗'}`, test3 ? 'pass' : 'fail');
+        log(`Test 4 (BatchNorm): ${test4 ? 'PASS ✓' : 'FAIL ✗'}`, test4 ? 'pass' : 'fail');
+        log(`Test 5 (Embedding): ${test5 ? 'PASS ✓' : 'FAIL ✗'}`, test5 ? 'pass' : 'fail');
+        log(`Test 6 (LSTM): ${test6 ? 'PASS ✓' : 'FAIL ✗'}`, test6 ? 'pass' : 'fail');
+        log(`Test 7 (GRU): ${test7 ? 'PASS ✓' : 'FAIL ✗'}`, test7 ? 'pass' : 'fail');
+        log(`Test 8 (CNN Model): ${test8 ? 'PASS ✓' : 'FAIL ✗'}`, test8 ? 'pass' : 'fail');
+        
+        const allPass = test1 && test2 && test3 && test4 && test5 && test6 && test7 && test8;
+        log(`\n${allPass ? 'ALL TESTS PASSED ✓' : 'SOME TESTS FAILED ✗'}`, allPass ? 'pass' : 'fail');
+        
+        if (allPass) {
+          log('\n🎉 All new layer abstractions working!');
+        }
+        
+      } catch (e) {
+        log(`\nError: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+    
+    runAllTests();
+  </script>
+</body>
+</html>

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Broadcasting Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Broadcasting Test</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { GPURuntime, GraphExecutor } from '../src/runtime.js';
+    import { Compiler } from '../dist/bundle.js';
+    
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+    
+    async function runTests() {
+      log('=== Broadcasting Tests ===\n');
+      
+      const runtime = new GPURuntime();
+      await runtime.init();
+      log('✓ Runtime initialized\n');
+
+      // Test 1: Scalar broadcast [4] + [1] -> [4]
+      log('Test 1: Scalar broadcast [4] + [1]');
+      try {
+        const graph1 = Compiler.createGraph();
+        const a1 = Compiler.input(graph1, [4], "a");
+        const b1 = Compiler.constant(graph1, [1], "scalar", [10.0]);
+        const y1 = Compiler.add(graph1, a1, b1);
+        Compiler.markOutput(graph1, y1);
+        const compiled1 = Compiler.compile(graph1);
+        const executor1 = new GraphExecutor(runtime, compiled1);
+        await executor1.init();
+        
+        const input1 = new Float32Array([1, 2, 3, 4]);
+        const output1 = await executor1.execute(input1);
+        log(`  [1,2,3,4] + [10] = [${Array.from(output1)}]`);
+        log(`  Expected: [11, 12, 13, 14]`);
+        const pass1 = [11,12,13,14].every((v,i) => Math.abs(output1[i] - v) < 0.01);
+        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor1.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 2: Row broadcast [2,3] + [1,3] -> [2,3]
+      log('Test 2: Row broadcast [2,3] + [1,3]');
+      try {
+        const graph2 = Compiler.createGraph();
+        const a2 = Compiler.input(graph2, [2, 3], "a");
+        const b2 = Compiler.constant(graph2, [1, 3], "row", [10, 20, 30]);
+        const y2 = Compiler.add(graph2, a2, b2);
+        Compiler.markOutput(graph2, y2);
+        const compiled2 = Compiler.compile(graph2);
+        const executor2 = new GraphExecutor(runtime, compiled2);
+        await executor2.init();
+        
+        // [[1,2,3], [4,5,6]] + [[10,20,30]]
+        const input2 = new Float32Array([1, 2, 3, 4, 5, 6]);
+        const output2 = await executor2.execute(input2);
+        log(`  [[1,2,3],[4,5,6]] + [[10,20,30]]`);
+        log(`  Output: [${Array.from(output2)}]`);
+        log(`  Expected: [11,22,33, 14,25,36]`);
+        const expected2 = [11, 22, 33, 14, 25, 36];
+        const pass2 = expected2.every((v,i) => Math.abs(output2[i] - v) < 0.01);
+        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor2.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 3: Column broadcast [2,3] + [2,1] -> [2,3]
+      log('Test 3: Column broadcast [2,3] + [2,1]');
+      try {
+        const graph3 = Compiler.createGraph();
+        const a3 = Compiler.input(graph3, [2, 3], "a");
+        const b3 = Compiler.constant(graph3, [2, 1], "col", [100, 200]);
+        const y3 = Compiler.add(graph3, a3, b3);
+        Compiler.markOutput(graph3, y3);
+        const compiled3 = Compiler.compile(graph3);
+        const executor3 = new GraphExecutor(runtime, compiled3);
+        await executor3.init();
+        
+        // [[1,2,3], [4,5,6]] + [[100], [200]]
+        const input3 = new Float32Array([1, 2, 3, 4, 5, 6]);
+        const output3 = await executor3.execute(input3);
+        log(`  [[1,2,3],[4,5,6]] + [[100],[200]]`);
+        log(`  Output: [${Array.from(output3)}]`);
+        log(`  Expected: [101,102,103, 204,205,206]`);
+        const expected3 = [101, 102, 103, 204, 205, 206];
+        const pass3 = expected3.every((v,i) => Math.abs(output3[i] - v) < 0.01);
+        log(`  ${pass3 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor3.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 4: Multiply with broadcast [2,3] * [3] -> [2,3]
+      log('Test 4: Multiply with broadcast [2,3] * [3]');
+      try {
+        const graph4 = Compiler.createGraph();
+        const a4 = Compiler.input(graph4, [2, 3], "a");
+        const b4 = Compiler.constant(graph4, [3], "vec", [2, 3, 4]);
+        const y4 = Compiler.mul(graph4, a4, b4);
+        Compiler.markOutput(graph4, y4);
+        const compiled4 = Compiler.compile(graph4);
+        const executor4 = new GraphExecutor(runtime, compiled4);
+        await executor4.init();
+        
+        // [[1,2,3], [4,5,6]] * [2,3,4]
+        const input4 = new Float32Array([1, 2, 3, 4, 5, 6]);
+        const output4 = await executor4.execute(input4);
+        log(`  [[1,2,3],[4,5,6]] * [2,3,4]`);
+        log(`  Output: [${Array.from(output4)}]`);
+        log(`  Expected: [2,6,12, 8,15,24]`);
+        const expected4 = [2, 6, 12, 8, 15, 24];
+        const pass4 = expected4.every((v,i) => Math.abs(output4[i] - v) < 0.01);
+        log(`  ${pass4 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor4.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 5: Same shape (no broadcast needed - fast path)
+      log('Test 5: Same shape [4] + [4] (fast path)');
+      try {
+        const graph5 = Compiler.createGraph();
+        const a5 = Compiler.input(graph5, [4], "a");
+        const b5 = Compiler.input(graph5, [4], "b");
+        const y5 = Compiler.add(graph5, a5, b5);
+        Compiler.markOutput(graph5, y5);
+        const compiled5 = Compiler.compile(graph5);
+        const executor5 = new GraphExecutor(runtime, compiled5);
+        await executor5.init();
+        
+        const inputA5 = new Float32Array([1, 2, 3, 4]);
+        const inputB5 = new Float32Array([10, 20, 30, 40]);
+        const output5 = await executor5.execute(inputA5, inputB5);
+        log(`  [1,2,3,4] + [10,20,30,40] = [${Array.from(output5)}]`);
+        log(`  Expected: [11, 22, 33, 44]`);
+        const expected5 = [11, 22, 33, 44];
+        const pass5 = expected5.every((v,i) => Math.abs(output5[i] - v) < 0.01);
+        log(`  ${pass5 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor5.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 6: 3D broadcast [2,3,4] + [1,1,4] -> [2,3,4]
+      log('Test 6: 3D broadcast [2,3,4] + [1,1,4]');
+      try {
+        const graph6 = Compiler.createGraph();
+        const a6 = Compiler.input(graph6, [2, 3, 4], "a");
+        const b6 = Compiler.constant(graph6, [1, 1, 4], "bias", [1, 2, 3, 4]);
+        const y6 = Compiler.add(graph6, a6, b6);
+        Compiler.markOutput(graph6, y6);
+        const compiled6 = Compiler.compile(graph6);
+        const executor6 = new GraphExecutor(runtime, compiled6);
+        await executor6.init();
+        
+        // All zeros + bias
+        const input6 = new Float32Array(24).fill(0);
+        const output6 = await executor6.execute(input6);
+        log(`  zeros[2,3,4] + [[1,2,3,4]]`);
+        log(`  Output (first 8): [${Array.from(output6).slice(0, 8)}]`);
+        log(`  Expected: [1,2,3,4, 1,2,3,4, ...]`);
+        const pass6 = output6[0] === 1 && output6[1] === 2 && output6[2] === 3 && output6[3] === 4 &&
+                      output6[4] === 1 && output6[5] === 2;
+        log(`  ${pass6 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor6.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      runtime.destroy();
+      log('=== All Broadcasting Tests Completed ===');
+    }
+    
+    runTests();
+  </script>
+</body>
+</html>

@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Tiled MatMul Diagnostic</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .warn { color: #fbbf24; }
+    .fail { color: #f87171; }
+    .info { color: #60a5fa; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Tiled MatMul Diagnostic</h1>
+  <p>Comparing different matmul implementations for M=1 decode</p>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    async function initGPU() {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      return { adapter, device };
+    }
+
+    // Version 1: Your current tiled matmul (16x16 tiles)
+    function createTiledMatmulShader(M, K, N, TILE = 16) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const M_DIM = ${M}u;
+const K_DIM = ${K}u;
+const N_DIM = ${N}u;
+const TILE_SIZE = ${TILE}u;
+
+var<workgroup> tileA: array<f32, ${TILE * TILE}>;
+var<workgroup> tileB: array<f32, ${TILE * TILE}>;
+
+@compute @workgroup_size(${TILE}, ${TILE})
+fn main(
+  @builtin(global_invocation_id) gid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(workgroup_id) wid: vec3<u32>
+) {
+  let row = gid.y;
+  let col = gid.x;
+  let localRow = lid.y;
+  let localCol = lid.x;
+  
+  var sum = 0.0;
+  let numTiles = (K_DIM + TILE_SIZE - 1u) / TILE_SIZE;
+  
+  for (var t = 0u; t < numTiles; t = t + 1u) {
+    let tiledRow = wid.y * TILE_SIZE + localRow;
+    let tiledCol = t * TILE_SIZE + localCol;
+    
+    if (tiledRow < M_DIM && tiledCol < K_DIM) {
+      tileA[localRow * TILE_SIZE + localCol] = a[tiledRow * K_DIM + tiledCol];
+    } else {
+      tileA[localRow * TILE_SIZE + localCol] = 0.0;
+    }
+    
+    let bRow = t * TILE_SIZE + localRow;
+    let bCol = wid.x * TILE_SIZE + localCol;
+    
+    if (bRow < K_DIM && bCol < N_DIM) {
+      tileB[localRow * TILE_SIZE + localCol] = b[bRow * N_DIM + bCol];
+    } else {
+      tileB[localRow * TILE_SIZE + localCol] = 0.0;
+    }
+    
+    workgroupBarrier();
+    
+    for (var i = 0u; i < TILE_SIZE; i = i + 1u) {
+      sum = sum + tileA[localRow * TILE_SIZE + i] * tileB[i * TILE_SIZE + localCol];
+    }
+    
+    workgroupBarrier();
+  }
+  
+  if (row < M_DIM && col < N_DIM) {
+    output[row * N_DIM + col] = sum;
+  }
+}`;
+    }
+
+    // Version 2: Simple non-tiled (for M=1, tiling overhead may hurt)
+    function createSimpleMatmulShader(M, K, N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const K_DIM = ${K}u;
+const N_DIM = ${N}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N_DIM) { return; }
+  
+  var sum = 0.0;
+  for (var k = 0u; k < K_DIM; k = k + 1u) {
+    sum = sum + a[k] * b[k * N_DIM + col];
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // Version 3: Vec4 optimized (process 4 columns per thread)
+    function createVec4MatmulShader(M, K, N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const K_DIM = ${K}u;
+const N_DIM = ${N}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col_base = gid.x * 4u;
+  if (col_base >= N_DIM) { return; }
+  
+  var sum0 = 0.0;
+  var sum1 = 0.0;
+  var sum2 = 0.0;
+  var sum3 = 0.0;
+  
+  for (var k = 0u; k < K_DIM; k = k + 1u) {
+    let a_val = a[k];
+    let b_idx = k * N_DIM + col_base;
+    sum0 = sum0 + a_val * b[b_idx];
+    sum1 = sum1 + a_val * b[b_idx + 1u];
+    sum2 = sum2 + a_val * b[b_idx + 2u];
+    sum3 = sum3 + a_val * b[b_idx + 3u];
+  }
+  
+  output[col_base] = sum0;
+  if (col_base + 1u < N_DIM) { output[col_base + 1u] = sum1; }
+  if (col_base + 2u < N_DIM) { output[col_base + 2u] = sum2; }
+  if (col_base + 3u < N_DIM) { output[col_base + 3u] = sum3; }
+}`;
+    }
+
+    // Version 4: Transposed B with vec4 loads
+    function createTransposedMatmulShader(M, K, N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b_t: array<f32>;  // Transposed: [N, K]
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const K_DIM = ${K}u;
+const N_DIM = ${N}u;
+const K4 = ${K / 4}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N_DIM) { return; }
+  
+  var sum = 0.0;
+  let b_offset = col * K_DIM;
+  
+  // Coalesced access: b_t[col, k] for varying k
+  for (var k = 0u; k < K_DIM; k = k + 1u) {
+    sum = sum + a[k] * b_t[b_offset + k];
+  }
+  output[col] = sum;
+}`;
+    }
+
+    // Version 5: Transposed B with vec4 and loop unrolling
+    function createOptimizedTransposedShader(M, K, N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_t: array<vec4<f32>>;  // Transposed: [N, K/4]
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const K4 = ${K / 4}u;
+const N_DIM = ${N}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N_DIM) { return; }
+  
+  var sum = vec4<f32>(0.0);
+  let b_offset = col * K4;
+  
+  for (var k = 0u; k < K4; k = k + 1u) {
+    sum = sum + a[k] * b_t[b_offset + k];
+  }
+  output[col] = sum.x + sum.y + sum.z + sum.w;
+}`;
+    }
+
+    // Version 6: Multiple outputs per thread with transposed B
+    function createMultiOutputTransposedShader(M, K, N, OUTPUTS_PER_THREAD = 4) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_t: array<vec4<f32>>;  // [N, K/4]
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const K4 = ${K / 4}u;
+const N_DIM = ${N}u;
+const OUTPUTS = ${OUTPUTS_PER_THREAD}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col_base = gid.x * OUTPUTS;
+  if (col_base >= N_DIM) { return; }
+  
+  var sums: array<vec4<f32>, ${OUTPUTS_PER_THREAD}>;
+  for (var i = 0u; i < OUTPUTS; i = i + 1u) {
+    sums[i] = vec4<f32>(0.0);
+  }
+  
+  for (var k = 0u; k < K4; k = k + 1u) {
+    let a_val = a[k];
+    for (var i = 0u; i < OUTPUTS; i = i + 1u) {
+      if (col_base + i < N_DIM) {
+        let b_val = b_t[(col_base + i) * K4 + k];
+        sums[i] = sums[i] + a_val * b_val;
+      }
+    }
+  }
+  
+  for (var i = 0u; i < OUTPUTS; i = i + 1u) {
+    if (col_base + i < N_DIM) {
+      output[col_base + i] = sums[i].x + sums[i].y + sums[i].z + sums[i].w;
+    }
+  }
+}`;
+    }
+
+    async function benchmarkShader(device, shader, M, K, N, name, iterations = 50, useTransposed = false) {
+      const aBuffer = device.createBuffer({
+        size: M * K * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+      });
+      const bBuffer = device.createBuffer({
+        size: K * N * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+      });
+      const outBuffer = device.createBuffer({
+        size: M * N * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+      });
+
+      // Initialize with random data
+      const aData = new Float32Array(M * K);
+      const bData = new Float32Array(K * N);
+      for (let i = 0; i < aData.length; i++) aData[i] = Math.random();
+      for (let i = 0; i < bData.length; i++) bData[i] = Math.random();
+      
+      device.queue.writeBuffer(aBuffer, 0, aData);
+      device.queue.writeBuffer(bBuffer, 0, bData);
+
+      let module;
+      try {
+        module = device.createShaderModule({ code: shader });
+      } catch (e) {
+        return { error: `Shader compile error: ${e.message}` };
+      }
+
+      let pipeline;
+      try {
+        pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+      } catch (e) {
+        return { error: `Pipeline error: ${e.message}` };
+      }
+
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: aBuffer } },
+          { binding: 1, resource: { buffer: bBuffer } },
+          { binding: 2, resource: { buffer: outBuffer } }
+        ]
+      });
+
+      // Calculate workgroups based on shader type
+      let workgroupsX, workgroupsY;
+      if (name.includes('Tiled')) {
+        const tile = 16;
+        workgroupsX = Math.ceil(N / tile);
+        workgroupsY = Math.ceil(M / tile);
+      } else if (name.includes('Vec4-4out') || name.includes('Multi')) {
+        workgroupsX = Math.ceil(N / 4 / 256);
+        workgroupsY = 1;
+      } else if (name.includes('Vec4')) {
+        workgroupsX = Math.ceil(N / 4 / 256);
+        workgroupsY = 1;
+      } else {
+        workgroupsX = Math.ceil(N / 256);
+        workgroupsY = 1;
+      }
+
+      // Clamp workgroups
+      workgroupsX = Math.min(workgroupsX, 65535);
+      workgroupsY = Math.min(workgroupsY, 65535);
+
+      // Warmup
+      for (let i = 0; i < 10; i++) {
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(workgroupsX, workgroupsY);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+
+      // Benchmark
+      const start = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(workgroupsX, workgroupsY);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+      const elapsed = performance.now() - start;
+
+      aBuffer.destroy();
+      bBuffer.destroy();
+      outBuffer.destroy();
+
+      const timePerOp = elapsed / iterations;
+      const flops = 2 * M * K * N;
+      const gflops = (flops / (timePerOp / 1000)) / 1e9;
+      const bytesRead = (M * K + K * N) * 4;
+      const bandwidth = (bytesRead / (timePerOp / 1000)) / 1e9;
+
+      return { timePerOp, gflops, bandwidth };
+    }
+
+    async function runDiagnostics() {
+      log('=== Tiled MatMul Diagnostic ===\n', 'header');
+
+      const { adapter, device } = await initGPU();
+      const info = adapter.info || { vendor: 'Unknown', architecture: 'Unknown' };
+      log(`GPU: ${info.vendor} - ${info.architecture}\n`, 'info');
+
+      const M = 1;
+      const K = 4096;
+      const N = 4096;
+
+      log(`Testing [${M}, ${K}] × [${K}, ${N}] matmul variants\n`, 'info');
+      log(`Memory to read: ${((M * K + K * N) * 4 / 1024 / 1024).toFixed(1)} MB per operation\n`, 'info');
+
+      const tests = [
+        { name: '1. Tiled 16x16 (current)', shader: createTiledMatmulShader(M, K, N, 16) },
+        { name: '2. Tiled 8x8', shader: createTiledMatmulShader(M, K, N, 8) },
+        { name: '3. Simple (no tiling)', shader: createSimpleMatmulShader(M, K, N) },
+        { name: '4. Vec4-4out per thread', shader: createVec4MatmulShader(M, K, N) },
+        { name: '5. Transposed B', shader: createTransposedMatmulShader(M, K, N), transposed: true },
+        { name: '6. Transposed + vec4', shader: createOptimizedTransposedShader(M, K, N), transposed: true },
+        { name: '7. Multi-out transposed', shader: createMultiOutputTransposedShader(M, K, N, 4), transposed: true },
+      ];
+
+      log('--- Results ---\n', 'header');
+      
+      let best = { gflops: 0, name: '' };
+      
+      for (const test of tests) {
+        const result = await benchmarkShader(device, test.shader, M, K, N, test.name);
+        
+        if (result.error) {
+          log(`${test.name}: ERROR - ${result.error}`, 'fail');
+        } else {
+          const cls = result.gflops > 5 ? 'pass' : result.gflops > 1 ? 'warn' : 'fail';
+          log(`${test.name}:`, 'info');
+          log(`    Time: ${result.timePerOp.toFixed(2)}ms | ${result.gflops.toFixed(2)} GFLOPS | ${result.bandwidth.toFixed(2)} GB/s`, cls);
+          
+          if (result.gflops > best.gflops) {
+            best = { gflops: result.gflops, name: test.name, time: result.timePerOp, bandwidth: result.bandwidth };
+          }
+        }
+      }
+
+      // Also test larger dimensions
+      log('\n--- Larger Dimensions ---\n', 'header');
+      
+      const largeTests = [
+        { M: 1, K: 4096, N: 11008, name: 'FFN up [1,4096]×[4096,11008]' },
+        { M: 1, K: 11008, N: 4096, name: 'FFN down [1,11008]×[11008,4096]' },
+      ];
+
+      for (const t of largeTests) {
+        log(`\n${t.name}:`, 'info');
+        
+        // Test current tiled
+        const tiled = await benchmarkShader(device, createTiledMatmulShader(t.M, t.K, t.N, 16), t.M, t.K, t.N, 'Tiled');
+        if (!tiled.error) {
+          log(`  Tiled 16x16: ${tiled.timePerOp.toFixed(2)}ms | ${tiled.gflops.toFixed(2)} GFLOPS`, tiled.gflops > 1 ? 'warn' : 'fail');
+        }
+        
+        // Test simple
+        const simple = await benchmarkShader(device, createSimpleMatmulShader(t.M, t.K, t.N), t.M, t.K, t.N, 'Simple');
+        if (!simple.error) {
+          log(`  Simple: ${simple.timePerOp.toFixed(2)}ms | ${simple.gflops.toFixed(2)} GFLOPS`, simple.gflops > 1 ? 'warn' : 'fail');
+        }
+
+        // Test vec4
+        const vec4 = await benchmarkShader(device, createVec4MatmulShader(t.M, t.K, t.N), t.M, t.K, t.N, 'Vec4-4out');
+        if (!vec4.error) {
+          log(`  Vec4-4out: ${vec4.timePerOp.toFixed(2)}ms | ${vec4.gflops.toFixed(2)} GFLOPS`, vec4.gflops > 1 ? 'pass' : 'warn');
+        }
+      }
+
+      log('\n\n=== SUMMARY ===\n', 'header');
+      log(`Best M=1 kernel: ${best.name}`, 'pass');
+      log(`  Time: ${best.time?.toFixed(2)}ms`, 'info');
+      log(`  GFLOPS: ${best.gflops.toFixed(2)}`, 'info');
+      log(`  Bandwidth: ${best.bandwidth?.toFixed(2)} GB/s`, 'info');
+
+      // Calculate improvement potential
+      const currentTime = 117; // From your benchmark
+      const speedup = currentTime / (best.time || currentTime);
+      log(`\nPotential speedup over current: ${speedup.toFixed(1)}x`, speedup > 2 ? 'pass' : 'warn');
+
+      log('\n=== DIAGNOSTIC COMPLETE ===', 'header');
+    }
+
+    runDiagnostics().catch(e => {
+      log(`\nFATAL ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

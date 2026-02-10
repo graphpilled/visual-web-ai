@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>INT4 FFN Benchmark</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    table { border-collapse: collapse; margin: 10px 0; }
+    td, th { border: 1px solid #444; padding: 8px; text-align: right; }
+    th { background: #2d2d44; }
+  </style>
+</head>
+<body>
+  <h1>INT4 FFN Layer Benchmark</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    function quantizeToInt4(weights, K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const packed = new Uint32Array(N * packedK);
+      const scales = new Float32Array(N * numGroups);
+      
+      for (let col = 0; col < N; col++) {
+        for (let g = 0; g < numGroups; g++) {
+          const kStart = g * groupSize;
+          const kEnd = Math.min(kStart + groupSize, K);
+          let maxAbs = 0;
+          for (let k = kStart; k < kEnd; k++) {
+            maxAbs = Math.max(maxAbs, Math.abs(weights[k * N + col]));
+          }
+          scales[col * numGroups + g] = maxAbs > 0 ? maxAbs / 7.0 : 1.0;
+        }
+        for (let packedIdx = 0; packedIdx < packedK; packedIdx++) {
+          let packedVal = 0;
+          for (let sub = 0; sub < 8; sub++) {
+            const k = packedIdx * 8 + sub;
+            if (k >= K) break;
+            const groupIdx = Math.floor(k / groupSize);
+            const scale = scales[col * numGroups + groupIdx];
+            let int4Val = Math.round(weights[k * N + col] / scale) + 8;
+            int4Val = Math.max(0, Math.min(15, int4Val));
+            packedVal |= (int4Val << (sub * 4));
+          }
+          packed[col * packedK + packedIdx] = packedVal;
+        }
+      }
+      return { packed, scales };
+    }
+
+    function createFP32Shader(K, N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+const K = ${K}u;
+const N = ${N}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  for (var i = 0u; i < K; i++) {
+    sum += a[i] * b[i * N + col];
+  }
+  output[col] = sum;
+}`;
+    }
+
+    function createINT4Shader(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[s_offset + group_idx];
+    let p0 = b_packed[b_offset + packed_idx];
+    let p1 = b_packed[b_offset + packed_idx + 1u];
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let w0 = vec4<f32>(
+      f32((p0 >>  0u) & 0xFu) - 8.0,
+      f32((p0 >>  4u) & 0xFu) - 8.0,
+      f32((p0 >>  8u) & 0xFu) - 8.0,
+      f32((p0 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w1 = vec4<f32>(
+      f32((p0 >> 16u) & 0xFu) - 8.0,
+      f32((p0 >> 20u) & 0xFu) - 8.0,
+      f32((p0 >> 24u) & 0xFu) - 8.0,
+      f32((p0 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    sum += dot(a0, w0) + dot(a1, w1);
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    let w2 = vec4<f32>(
+      f32((p1 >>  0u) & 0xFu) - 8.0,
+      f32((p1 >>  4u) & 0xFu) - 8.0,
+      f32((p1 >>  8u) & 0xFu) - 8.0,
+      f32((p1 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w3 = vec4<f32>(
+      f32((p1 >> 16u) & 0xFu) - 8.0,
+      f32((p1 >> 20u) & 0xFu) - 8.0,
+      f32((p1 >> 24u) & 0xFu) - 8.0,
+      f32((p1 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    sum += dot(a2, w2) + dot(a3, w3);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    async function test() {
+      log('=== INT4 FFN Layer Benchmark ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      log(`GPU: ${adapter.info?.vendor || 'unknown'}\n`);
+
+      const GROUP_SIZE = 128;
+      const configs = [
+        { name: 'Attention proj', K: 4096, N: 4096 },
+        { name: 'FFN up (Llama-7B)', K: 4096, N: 11008 },
+        { name: 'FFN down (Llama-7B)', K: 11008, N: 4096 },
+        { name: 'Vocab proj (32k)', K: 4096, N: 32000 },
+        { name: 'FFN up (Qwen-0.5B)', K: 1024, N: 2816 },
+        { name: 'FFN down (Qwen-0.5B)', K: 2816, N: 1024 },
+      ];
+
+      const results = [];
+
+      for (const cfg of configs) {
+        const { name, K, N } = cfg;
+        const numGroups = Math.ceil(K / GROUP_SIZE);
+        const packedK = Math.ceil(K / 8);
+        
+        log(`\nBenchmarking: ${name} [1,${K}]×[${K},${N}]...`, 'header');
+        
+        // Create data
+        const a = new Float32Array(K);
+        const b = new Float32Array(K * N);
+        for (let i = 0; i < a.length; i++) a[i] = Math.random() * 2 - 1;
+        for (let i = 0; i < b.length; i++) b[i] = Math.random() * 2 - 1;
+        const { packed, scales } = quantizeToInt4(b, K, N, GROUP_SIZE);
+        
+        // Buffers
+        const aBuffer = device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const bBuffer = device.createBuffer({ size: K * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const packedBuffer = device.createBuffer({ size: N * packedK * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const scalesBuffer = device.createBuffer({ size: N * numGroups * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const outBuffer = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+        
+        device.queue.writeBuffer(aBuffer, 0, a);
+        device.queue.writeBuffer(bBuffer, 0, b);
+        device.queue.writeBuffer(packedBuffer, 0, packed);
+        device.queue.writeBuffer(scalesBuffer, 0, scales);
+        
+        // Compile
+        const fp32Module = device.createShaderModule({ code: createFP32Shader(K, N) });
+        const int4Module = device.createShaderModule({ code: createINT4Shader(K, N, GROUP_SIZE) });
+        
+        const fp32Pipeline = device.createComputePipeline({ layout: 'auto', compute: { module: fp32Module, entryPoint: 'main' } });
+        const int4Pipeline = device.createComputePipeline({ layout: 'auto', compute: { module: int4Module, entryPoint: 'main' } });
+        
+        const fp32BindGroup = device.createBindGroup({
+          layout: fp32Pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: aBuffer } },
+            { binding: 1, resource: { buffer: bBuffer } },
+            { binding: 2, resource: { buffer: outBuffer } }
+          ]
+        });
+        
+        const int4BindGroup = device.createBindGroup({
+          layout: int4Pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: aBuffer } },
+            { binding: 1, resource: { buffer: packedBuffer } },
+            { binding: 2, resource: { buffer: scalesBuffer } },
+            { binding: 3, resource: { buffer: outBuffer } }
+          ]
+        });
+        
+        const workgroups = Math.ceil(N / 256);
+        const iterations = 50;
+        
+        // Warmup + benchmark FP32
+        for (let i = 0; i < 10; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(fp32Pipeline);
+          pass.setBindGroup(0, fp32BindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        let start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(fp32Pipeline);
+          pass.setBindGroup(0, fp32BindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const fp32Time = (performance.now() - start) / iterations;
+        
+        // Warmup + benchmark INT4
+        for (let i = 0; i < 10; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(int4Pipeline);
+          pass.setBindGroup(0, int4BindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(int4Pipeline);
+          pass.setBindGroup(0, int4BindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const int4Time = (performance.now() - start) / iterations;
+        
+        const speedup = fp32Time / int4Time;
+        const fp32Mem = (K + K * N) * 4;
+        const int4Mem = K * 4 + N * packedK * 4 + N * numGroups * 4;
+        
+        log(`  FP32: ${fp32Time.toFixed(2)}ms (${(fp32Mem/1024/1024).toFixed(1)}MB)`);
+        log(`  INT4: ${int4Time.toFixed(2)}ms (${(int4Mem/1024/1024).toFixed(1)}MB)`, speedup > 1.5 ? 'pass' : 'fail');
+        log(`  Speedup: ${speedup.toFixed(2)}x`, speedup > 1.5 ? 'pass' : 'fail');
+        
+        results.push({ name, K, N, fp32Time, int4Time, speedup, fp32Mem, int4Mem });
+        
+        aBuffer.destroy();
+        bBuffer.destroy();
+        packedBuffer.destroy();
+        scalesBuffer.destroy();
+        outBuffer.destroy();
+      }
+
+      // Summary table
+      log('\n\n=== SUMMARY ===\n', 'header');
+      log('┌─────────────────────────┬─────────┬─────────┬─────────┐');
+      log('│ Layer                   │ FP32    │ INT4    │ Speedup │');
+      log('├─────────────────────────┼─────────┼─────────┼─────────┤');
+      for (const r of results) {
+        const nameStr = r.name.padEnd(23);
+        const fp32Str = `${r.fp32Time.toFixed(2)}ms`.padStart(7);
+        const int4Str = `${r.int4Time.toFixed(2)}ms`.padStart(7);
+        const speedStr = `${r.speedup.toFixed(2)}x`.padStart(7);
+        log(`│ ${nameStr} │ ${fp32Str} │ ${int4Str} │ ${speedStr} │`);
+      }
+      log('└─────────────────────────┴─────────┴─────────┴─────────┘');
+
+      // Calculate full model projection
+      log('\n=== Model Inference Projection ===\n', 'header');
+      
+      // Qwen-0.5B: 24 layers, each has QKV+O proj + FFN up/down/gate
+      const qwenLayers = 24;
+      const qwenAttnTime = results.find(r => r.name.includes('Attention'))?.int4Time || 2;
+      const qwenFFNUp = results.find(r => r.name.includes('Qwen-0.5B') && r.name.includes('up'))?.int4Time || 1;
+      const qwenFFNDown = results.find(r => r.name.includes('Qwen-0.5B') && r.name.includes('down'))?.int4Time || 1;
+      
+      // Rough estimate: 4 attn proj + 3 FFN proj per layer (simplified)
+      const qwenPerLayer = 4 * qwenAttnTime + 3 * (qwenFFNUp + qwenFFNDown) / 2;
+      const qwenTotal = qwenLayers * qwenPerLayer;
+      
+      log(`Qwen-0.5B (24 layers):`);
+      log(`  Estimated decode time: ~${qwenTotal.toFixed(0)}ms/token`);
+      log(`  Tokens/sec: ~${(1000/qwenTotal).toFixed(1)}`);
+    }
+    
+    test().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

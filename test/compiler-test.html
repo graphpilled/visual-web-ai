@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Compiler Test</title>
+</head>
+<body>
+  <h1>Compiler Test</h1>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { GPURuntime } from '../src/runtime.js';
+    import { Compiler } from '../dist/bundle.js';
+
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+
+    async function test() {
+      try {
+        log('=== Compiler Test ===\n');
+
+        // Test 1: Simple graph (input -> relu -> output)
+        log('Test 1: Simple ReLU graph');
+        const graph1 = Compiler.createGraph();
+        const x1 = Compiler.input(graph1, [4], "input");
+        const y1 = Compiler.relu(graph1, x1);
+        
+        log(`  Created graph with ${graph1.nodes.length} nodes`);
+        
+        const compiled1 = Compiler.compile(graph1, [y1]);
+        if (compiled1) {
+          log(`  Compiled: ${compiled1.ops.length} ops, ${compiled1.buffers.length} buffers`);
+          log(`  Total buffer size: ${compiled1.totalBufferSize} bytes`);
+          log('  PASS ✓');
+        } else {
+          log('  FAIL ✗ - compilation returned undefined');
+        }
+
+        // Test 2: Chain of ops (input -> relu -> sigmoid -> output)
+        log('\nTest 2: Chained ops (ReLU -> Sigmoid)');
+        const graph2 = Compiler.createGraph();
+        const x2 = Compiler.input(graph2, [8], "input");
+        const r2 = Compiler.relu(graph2, x2);
+        const y2 = Compiler.sigmoid(graph2, r2);
+        
+        log(`  Created graph with ${graph2.nodes.length} nodes`);
+        
+        const compiled2 = Compiler.compile(graph2, [y2]);
+        if (compiled2) {
+          log(`  Compiled: ${compiled2.ops.length} ops, ${compiled2.buffers.length} buffers`);
+          compiled2.ops.forEach((op, i) => {
+            log(`    Op ${i}: ${op.kernel.name}`);
+          });
+          log('  PASS ✓');
+        } else {
+          log('  FAIL ✗');
+        }
+
+        // Test 3: Binary op (add two inputs)
+        log('\nTest 3: Binary op (Add)');
+        const graph3 = Compiler.createGraph();
+        const a3 = Compiler.input(graph3, [4], "a");
+        const b3 = Compiler.input(graph3, [4], "b");
+        const y3 = Compiler.add(graph3, a3, b3);
+        
+        log(`  Created graph with ${graph3.nodes.length} nodes`);
+        
+        const compiled3 = Compiler.compile(graph3, [y3]);
+        if (compiled3) {
+          log(`  Compiled: ${compiled3.ops.length} ops, ${compiled3.buffers.length} buffers`);
+          log(`  Input buffers: [${compiled3.inputBufferIds.join(', ')}]`);
+          log(`  Output buffers: [${compiled3.outputBufferIds.join(', ')}]`);
+          log('  PASS ✓');
+        } else {
+          log('  FAIL ✗');
+        }
+
+        // Test 4: MatMul
+        log('\nTest 4: MatMul');
+        const graph4 = Compiler.createGraph();
+        const a4 = Compiler.input(graph4, [2, 3], "a");
+        const b4 = Compiler.input(graph4, [3, 4], "b");
+        const y4 = Compiler.matmul(graph4, a4, b4);
+        
+        const compiled4 = Compiler.compile(graph4, [y4]);
+        if (compiled4) {
+          log(`  Compiled: ${compiled4.ops.length} ops`);
+          log(`  Output shape inferred from buffers`);
+          log('  PASS ✓');
+        } else {
+          log('  FAIL ✗');
+        }
+
+        // Test 5: MLP-like graph (input -> dense -> relu -> dense -> softmax)
+        log('\nTest 5: MLP-like graph');
+        const graph5 = Compiler.createGraph();
+        const x5 = Compiler.input(graph5, [1, 784], "input");
+        const h1 = Compiler.dense(graph5, x5, 128);
+        const a1 = Compiler.relu(graph5, h1);
+        const h2 = Compiler.dense(graph5, a1, 10);
+        const y5 = Compiler.softmax(graph5, h2, -1);
+        
+        log(`  Created graph with ${graph5.nodes.length} nodes`);
+        
+        const compiled5 = Compiler.compile(graph5, [y5]);
+        if (compiled5) {
+          log(`  Compiled: ${compiled5.ops.length} ops, ${compiled5.buffers.length} buffers`);
+          log(`  Total buffer size: ${compiled5.totalBufferSize} bytes`);
+          compiled5.ops.forEach((op, i) => {
+            log(`    Op ${i}: ${op.kernel.name}`);
+          });
+          log('  PASS ✓');
+        } else {
+          log('  FAIL ✗');
+        }
+
+        // Test 6: Execute compiled graph
+        log('\n=== Execute Compiled Graph ===');
+        const runtime = new GPURuntime();
+        await runtime.init();
+        log('Runtime initialized');
+
+        // Simple graph: input -> relu
+        const execGraph = Compiler.createGraph();
+        const execX = Compiler.input(execGraph, [4], "input");
+        const execY = Compiler.relu(execGraph, execX);
+        const execCompiled = Compiler.compile(execGraph, [execY]);
+
+        if (execCompiled && execCompiled.ops.length > 0) {
+          const op = execCompiled.ops[0];
+          const dispatch = {
+            workgroupSize: [op.dispatch.workgroupSize[0], op.dispatch.workgroupSize[1], op.dispatch.workgroupSize[2]],
+            workgroupCount: [op.dispatch.workgroupCount[0], op.dispatch.workgroupCount[1], op.dispatch.workgroupCount[2]]
+          };
+
+          const input = new Float32Array([-1, 2, -3, 4]);
+          const output = await runtime.runOp(op.kernel, dispatch, input);
+          
+          const expected = [0, 2, 0, 4];
+          const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.001);
+          log(`Executed ReLU: [${input}] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+        }
+
+        runtime.destroy();
+        log('\n=== All Compiler Tests Completed ===');
+
+      } catch (e) {
+        log('✗ Error: ' + e.message);
+        console.error(e);
+      }
+    }
+
+    test();
+  </script>
+</body>
+</html>

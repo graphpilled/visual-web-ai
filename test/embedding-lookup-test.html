@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Embedding Lookup Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+  </style>
+</head>
+<body>
+  <h1>📖 Embedding Lookup Test</h1>
+  <p>Tests F16 → F32 embedding lookup for Qwen2.5 inference.</p>
+  <button onclick="runTests()">Run All Tests</button>
+  <button onclick="runBenchmark()">Run Benchmark</button>
+  <pre id="output"></pre>
+
+  <script src="embedding-lookup.js"></script>
+  <script>
+    let device = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+
+    // Test config (smaller for testing)
+    const TEST_VOCAB_SIZE = 1024;
+    const TEST_HIDDEN_SIZE = 256;
+    
+    // Qwen2.5-7B config
+    const QWEN_VOCAB_SIZE = 152064;
+    const QWEN_HIDDEN_SIZE = 3584;
+
+    // Convert F32 to F16 (as stored in embedding table)
+    function f32ToF16(f32) {
+      const f32View = new Float32Array([f32]);
+      const u32View = new Uint32Array(f32View.buffer);
+      const f32Bits = u32View[0];
+      
+      const sign = (f32Bits >> 16) & 0x8000;
+      const exp = ((f32Bits >> 23) & 0xFF) - 127 + 15;
+      const mantissa = (f32Bits >> 13) & 0x3FF;
+      
+      if (exp <= 0) {
+        return sign; // Denormal or zero
+      } else if (exp >= 31) {
+        return sign | 0x7C00; // Infinity
+      }
+      
+      return sign | (exp << 10) | mantissa;
+    }
+    
+    // Pack two F16 values into one u32
+    function packF16Pair(f16Low, f16High) {
+      return (f16High << 16) | f16Low;
+    }
+
+    // Create test embedding table (F16 packed as u32)
+    function createTestEmbeddingTable(vocabSize, hiddenSize) {
+      const packedSize = vocabSize * (hiddenSize / 2);
+      const table = new Uint32Array(packedSize);
+      
+      for (let v = 0; v < vocabSize; v++) {
+        for (let d = 0; d < hiddenSize / 2; d++) {
+          // Create recognizable pattern: embedding[v][d] = v * 0.001 + d * 0.0001
+          const val1 = v * 0.001 + (d * 2) * 0.0001;
+          const val2 = v * 0.001 + (d * 2 + 1) * 0.0001;
+          
+          const f16_1 = f32ToF16(val1);
+          const f16_2 = f32ToF16(val2);
+          
+          table[v * (hiddenSize / 2) + d] = packF16Pair(f16_1, f16_2);
+        }
+      }
+      
+      return table;
+    }
+
+    async function initWebGPU() {
+      if (device) return device;
+      
+      if (!navigator.gpu) {
+        throw new Error('WebGPU not supported');
+      }
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        throw new Error('No GPU adapter found');
+      }
+      
+      device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: 2 * 1024 * 1024 * 1024, // 2GB for full embedding
+        }
+      });
+      log('✅ WebGPU initialized', 'pass');
+      return device;
+    }
+
+    async function readBuffer(buffer, size) {
+      const readBuffer = device.createBuffer({
+        size: size,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+      });
+      
+      const commandEncoder = device.createCommandEncoder();
+      commandEncoder.copyBufferToBuffer(buffer, 0, readBuffer, 0, size);
+      device.queue.submit([commandEncoder.finish()]);
+      
+      await readBuffer.mapAsync(GPUMapMode.READ);
+      const data = new Float32Array(readBuffer.getMappedRange().slice(0));
+      readBuffer.unmap();
+      readBuffer.destroy();
+      
+      return data;
+    }
+
+    async function runTests() {
+      clear();
+      log('=== Embedding Lookup Tests ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        log(`\nTest Config:`, 'info');
+        log(`  Vocab size: ${TEST_VOCAB_SIZE}`);
+        log(`  Hidden size: ${TEST_HIDDEN_SIZE}`);
+        
+        // Create test embedding table
+        log('\n--- Test 1: Create Embedding Table ---', 'header');
+        const embTable = createTestEmbeddingTable(TEST_VOCAB_SIZE, TEST_HIDDEN_SIZE);
+        log(`  Table size: ${(embTable.byteLength / 1024).toFixed(1)} KB`);
+        log(`  ✅ Created test embedding table`, 'pass');
+        
+        // Upload to GPU
+        const embBuffer = device.createBuffer({
+          size: embTable.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Uint32Array(embBuffer.getMappedRange()).set(embTable);
+        embBuffer.unmap();
+        
+        // Initialize embedding lookup
+        const embLookup = new EmbeddingLookup(device, TEST_VOCAB_SIZE, TEST_HIDDEN_SIZE);
+        embLookup.setEmbeddingBuffer(embBuffer);
+        await embLookup.init();
+        log(`  ✅ Embedding lookup initialized`, 'pass');
+        
+        // Test 2: Single token lookup
+        log('\n--- Test 2: Single Token Lookup ---', 'header');
+        
+        const testTokenId = 42;
+        const outputBuffer = device.createBuffer({
+          size: TEST_HIDDEN_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
+        
+        embLookup.lookupSingle(testTokenId, outputBuffer);
+        await device.queue.onSubmittedWorkDone();
+        
+        const singleResult = await readBuffer(outputBuffer, TEST_HIDDEN_SIZE * 4);
+        
+        // Verify first few values
+        const expectedFirst = testTokenId * 0.001 + 0 * 0.0001;
+        const expectedSecond = testTokenId * 0.001 + 1 * 0.0001;
+        
+        log(`  Token ID: ${testTokenId}`);
+        log(`  Output[0]: ${singleResult[0].toFixed(6)} (expected: ~${expectedFirst.toFixed(6)})`);
+        log(`  Output[1]: ${singleResult[1].toFixed(6)} (expected: ~${expectedSecond.toFixed(6)})`);
+        
+        // F16 has ~3 decimal digits of precision
+        const singleMatch = Math.abs(singleResult[0] - expectedFirst) < 0.001 &&
+                           Math.abs(singleResult[1] - expectedSecond) < 0.001;
+        log(`  ${singleMatch ? '✅ PASS' : '❌ FAIL'}`, singleMatch ? 'pass' : 'fail');
+        
+        outputBuffer.destroy();
+        
+        // Test 3: Batch token lookup
+        log('\n--- Test 3: Batch Token Lookup ---', 'header');
+        
+        const batchTokens = new Uint32Array([0, 10, 100, 500, 1000]);
+        const batchOutput = await embLookup.lookupBatch(batchTokens);
+        await device.queue.onSubmittedWorkDone();
+        
+        const batchResult = await readBuffer(batchOutput, batchTokens.length * TEST_HIDDEN_SIZE * 4);
+        
+        log(`  Tokens: [${Array.from(batchTokens).join(', ')}]`);
+        
+        let batchMatch = true;
+        for (let i = 0; i < batchTokens.length; i++) {
+          const tokenId = batchTokens[i];
+          const expected = tokenId * 0.001;
+          const actual = batchResult[i * TEST_HIDDEN_SIZE];
+          const match = Math.abs(actual - expected) < 0.001;
+          
+          log(`  Token ${tokenId}: output[0]=${actual.toFixed(4)} (expected: ~${expected.toFixed(4)}) ${match ? '✅' : '❌'}`);
+          if (!match) batchMatch = false;
+        }
+        
+        log(`  ${batchMatch ? '✅ PASS' : '❌ FAIL'}`, batchMatch ? 'pass' : 'fail');
+        
+        batchOutput.destroy();
+        
+        // Test 4: Edge cases
+        log('\n--- Test 4: Edge Cases ---', 'header');
+        
+        // First token (ID = 0)
+        const firstOutput = device.createBuffer({
+          size: TEST_HIDDEN_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
+        embLookup.lookupSingle(0, firstOutput);
+        await device.queue.onSubmittedWorkDone();
+        const firstResult = await readBuffer(firstOutput, TEST_HIDDEN_SIZE * 4);
+        
+        // Last token (ID = vocab_size - 1)
+        const lastOutput = device.createBuffer({
+          size: TEST_HIDDEN_SIZE * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
+        embLookup.lookupSingle(TEST_VOCAB_SIZE - 1, lastOutput);
+        await device.queue.onSubmittedWorkDone();
+        const lastResult = await readBuffer(lastOutput, TEST_HIDDEN_SIZE * 4);
+        
+        const firstExpected = 0 * 0.001;
+        const lastExpected = (TEST_VOCAB_SIZE - 1) * 0.001;
+        
+        log(`  First token (0): output[0]=${firstResult[0].toFixed(6)} (expected: ${firstExpected.toFixed(6)})`);
+        log(`  Last token (${TEST_VOCAB_SIZE - 1}): output[0]=${lastResult[0].toFixed(4)} (expected: ~${lastExpected.toFixed(4)})`);
+        
+        const edgeMatch = Math.abs(firstResult[0] - firstExpected) < 0.001 &&
+                         Math.abs(lastResult[0] - lastExpected) < 0.01;
+        log(`  ${edgeMatch ? '✅ PASS' : '❌ FAIL'}`, edgeMatch ? 'pass' : 'fail');
+        
+        firstOutput.destroy();
+        lastOutput.destroy();
+        
+        // Cleanup
+        embBuffer.destroy();
+        
+        // Test 5: Memory estimate for Qwen2.5
+        log('\n--- Test 5: Qwen2.5-7B Memory Estimate ---', 'header');
+        const qwenEmbSize = QWEN_VOCAB_SIZE * QWEN_HIDDEN_SIZE * 2; // F16 = 2 bytes
+        log(`  Vocab: ${QWEN_VOCAB_SIZE}`);
+        log(`  Hidden: ${QWEN_HIDDEN_SIZE}`);
+        log(`  Embedding table: ${(qwenEmbSize / 1024 / 1024).toFixed(1)} MB (F16)`);
+        log(`  Output per token: ${(QWEN_HIDDEN_SIZE * 4 / 1024).toFixed(1)} KB (F32)`);
+        
+        log('\n✅ All tests complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runBenchmark() {
+      clear();
+      log('=== Embedding Lookup Benchmark ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        // Use larger size for realistic benchmark
+        const vocabSize = 32000; // Smaller than Qwen for memory
+        const hiddenSize = QWEN_HIDDEN_SIZE; // Full Qwen hidden size
+        
+        log(`Config: vocab=${vocabSize}, hidden=${hiddenSize}`, 'info');
+        
+        // Create embedding table
+        const embTable = createTestEmbeddingTable(vocabSize, hiddenSize);
+        const embBuffer = device.createBuffer({
+          size: embTable.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Uint32Array(embBuffer.getMappedRange()).set(embTable);
+        embBuffer.unmap();
+        
+        const embLookup = new EmbeddingLookup(device, vocabSize, hiddenSize);
+        embLookup.setEmbeddingBuffer(embBuffer);
+        await embLookup.init();
+        
+        // Benchmark single token lookup
+        log('\n--- Single Token Lookup ---', 'header');
+        
+        const iterations = 1000;
+        const outputBuffer = device.createBuffer({
+          size: hiddenSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
+        
+        // Warmup
+        for (let i = 0; i < 10; i++) {
+          embLookup.lookupSingle(i % vocabSize, outputBuffer);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Benchmark
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          embLookup.lookupSingle(i % vocabSize, outputBuffer);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const elapsed = performance.now() - start;
+        
+        const avgTime = elapsed / iterations;
+        const bandwidth = (hiddenSize * 2 + hiddenSize * 4) / avgTime / 1e6; // F16 read + F32 write
+        
+        log(`  Iterations: ${iterations}`);
+        log(`  Total time: ${elapsed.toFixed(2)} ms`);
+        log(`  Average: ${(avgTime * 1000).toFixed(2)} µs`);
+        log(`  Bandwidth: ${bandwidth.toFixed(2)} GB/s`);
+        
+        // Benchmark batch lookup
+        log('\n--- Batch Token Lookup ---', 'header');
+        
+        const batchSizes = [16, 64, 256, 512];
+        
+        for (const batchSize of batchSizes) {
+          const tokens = new Uint32Array(batchSize);
+          for (let i = 0; i < batchSize; i++) {
+            tokens[i] = Math.floor(Math.random() * vocabSize);
+          }
+          
+          const batchIter = 100;
+          
+          // Warmup
+          for (let i = 0; i < 5; i++) {
+            const out = await embLookup.lookupBatch(tokens);
+            out.destroy();
+          }
+          await device.queue.onSubmittedWorkDone();
+          
+          const batchStart = performance.now();
+          for (let i = 0; i < batchIter; i++) {
+            const out = await embLookup.lookupBatch(tokens);
+            out.destroy();
+          }
+          await device.queue.onSubmittedWorkDone();
+          const batchElapsed = performance.now() - batchStart;
+          
+          const batchAvg = batchElapsed / batchIter;
+          log(`  Batch ${batchSize}: ${batchAvg.toFixed(2)} ms (${(batchAvg / batchSize * 1000).toFixed(1)} µs/token)`);
+        }
+        
+        // Cleanup
+        outputBuffer.destroy();
+        embBuffer.destroy();
+        
+        log('\n✅ Benchmark complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+  </script>
+</body>
+</html>

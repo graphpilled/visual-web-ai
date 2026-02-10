@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head><title>Debug</title></head>
+<body>
+  <pre id="output"></pre>
+  <script type="module">
+    import { Compiler } from '../dist/bundle.js';
+
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+
+    // Test 2: Chained ops
+    log('=== Test 2: ReLU -> Sigmoid ===');
+    const graph2 = Compiler.createGraph();
+    const x2 = Compiler.input(graph2, [4], "input");
+    const r2 = Compiler.relu(graph2, x2);
+    const y2 = Compiler.sigmoid(graph2, r2);
+    const compiled2 = Compiler.compile(graph2, [y2]);
+
+    log('Nodes:');
+    graph2.nodes.forEach(n => {
+      log(`  Node ${n.id}: inputs=[${n.inputs}]`);
+    });
+
+    log('\nBuffers:');
+    compiled2.buffers.forEach(b => {
+      log(`  Buffer ${b.id}: nodeId=${b.nodeId}, isInput=${b.isInput}, isOutput=${b.isOutput}`);
+    });
+
+    log('\nOps:');
+    compiled2.ops.forEach(op => {
+      log(`  ${op.kernel.name}: inputBufferIds=[${op.inputBufferIds}], outputBufferId=${op.outputBufferId}`);
+    });
+
+    // Test 5: (a + b) * c
+    log('\n=== Test 5: (a + b) * c ===');
+    const graph5 = Compiler.createGraph();
+    const a5 = Compiler.input(graph5, [4], "a");
+    const b5 = Compiler.input(graph5, [4], "b");
+    const c5 = Compiler.input(graph5, [4], "c");
+    const sum5 = Compiler.add(graph5, a5, b5);
+    const y5 = Compiler.mul(graph5, sum5, c5);
+    const compiled5 = Compiler.compile(graph5, [y5]);
+
+    log('Nodes:');
+    graph5.nodes.forEach(n => {
+      log(`  Node ${n.id}: inputs=[${n.inputs}]`);
+    });
+
+    log('\nBuffers:');
+    compiled5.buffers.forEach(b => {
+      log(`  Buffer ${b.id}: nodeId=${b.nodeId}, isInput=${b.isInput}, isOutput=${b.isOutput}`);
+    });
+
+    log('\nOps:');
+    compiled5.ops.forEach(op => {
+      log(`  ${op.kernel.name}: inputBufferIds=[${op.inputBufferIds}], outputBufferId=${op.outputBufferId}`);
+    });
+  </script>
+</body>
+</html>

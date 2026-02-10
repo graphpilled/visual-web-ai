@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>INT4 MatMul Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .warn { color: #fbbf24; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>INT4 MatMul Kernel Test</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    // Pack FP32 weights to INT4 format
+    function quantizeToInt4(weights, K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      
+      // Output arrays
+      const packed = new Uint32Array(N * packedK);
+      const scales = new Float32Array(N * numGroups);
+      
+      // Process each column (output neuron)
+      for (let col = 0; col < N; col++) {
+        // Process each group
+        for (let g = 0; g < numGroups; g++) {
+          const kStart = g * groupSize;
+          const kEnd = Math.min(kStart + groupSize, K);
+          
+          // Find max absolute value in group for scale
+          let maxAbs = 0;
+          for (let k = kStart; k < kEnd; k++) {
+            const val = Math.abs(weights[k * N + col]);
+            if (val > maxAbs) maxAbs = val;
+          }
+          
+          // Scale: map [-maxAbs, maxAbs] to [-8, 7]
+          const scale = maxAbs / 7.0;
+          scales[col * numGroups + g] = scale > 0 ? scale : 1.0;
+        }
+        
+        // Quantize and pack
+        for (let packedIdx = 0; packedIdx < packedK; packedIdx++) {
+          let packedVal = 0;
+          for (let sub = 0; sub < 8; sub++) {
+            const k = packedIdx * 8 + sub;
+            if (k >= K) break;
+            
+            const groupIdx = Math.floor(k / groupSize);
+            const scale = scales[col * numGroups + groupIdx];
+            const fp32Val = weights[k * N + col];
+            
+            // Quantize to INT4: round(val/scale) + 8, clamp to [0, 15]
+            let int4Val = Math.round(fp32Val / scale) + 8;
+            int4Val = Math.max(0, Math.min(15, int4Val));
+            
+            packedVal |= (int4Val << (sub * 4));
+          }
+          packed[col * packedK + packedIdx] = packedVal;
+        }
+      }
+      
+      return { packed, scales, packedK, numGroups };
+    }
+
+    // Dequantize for verification
+    function dequantizeInt4(packed, scales, K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const weights = new Float32Array(K * N);
+      
+      for (let col = 0; col < N; col++) {
+        for (let packedIdx = 0; packedIdx < packedK; packedIdx++) {
+          const packedVal = packed[col * packedK + packedIdx];
+          for (let sub = 0; sub < 8; sub++) {
+            const k = packedIdx * 8 + sub;
+            if (k >= K) break;
+            
+            const int4Val = (packedVal >> (sub * 4)) & 0xF;
+            const groupIdx = Math.floor(k / groupSize);
+            const scale = scales[col * numGroups + groupIdx];
+            weights[k * N + col] = (int4Val - 8) * scale;
+          }
+        }
+      }
+      return weights;
+    }
+
+    async function test() {
+      log('=== INT4 MatMul Kernel Test ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      log(`GPU: ${adapter.info?.vendor || 'unknown'} - ${adapter.info?.architecture || 'unknown'}\n`);
+      
+      const M = 1, K = 4096, N = 4096;
+      const GROUP_SIZE = 32;
+      const numGroups = Math.ceil(K / GROUP_SIZE);
+      const packedK = Math.ceil(K / 8);
+      
+      log(`Config: [${M},${K}] x [${K},${N}], group_size=${GROUP_SIZE}`);
+      log(`Packed weights: ${(N * packedK * 4 / 1024 / 1024).toFixed(2)} MB (vs ${(K * N * 4 / 1024 / 1024).toFixed(2)} MB FP32)`);
+      log(`Scales: ${(N * numGroups * 4 / 1024 / 1024).toFixed(2)} MB`);
+      log(`Compression: ${(K * N * 4 / (N * packedK * 4 + N * numGroups * 4)).toFixed(2)}x\n`);
+      
+      // Create test data
+      const a = new Float32Array(M * K);
+      const b = new Float32Array(K * N);  // Original FP32 weights
+      for (let i = 0; i < a.length; i++) a[i] = Math.random() * 2 - 1;
+      for (let i = 0; i < b.length; i++) b[i] = Math.random() * 2 - 1;
+      
+      // Quantize weights
+      log('Quantizing weights...', 'info');
+      const { packed, scales } = quantizeToInt4(b, K, N, GROUP_SIZE);
+      
+      // Verify quantization
+      const bDequant = dequantizeInt4(packed, scales, K, N, GROUP_SIZE);
+      let maxError = 0;
+      for (let i = 0; i < b.length; i++) {
+        maxError = Math.max(maxError, Math.abs(b[i] - bDequant[i]));
+      }
+      log(`Quantization max error: ${maxError.toFixed(6)}`, maxError < 0.1 ? 'pass' : 'warn');
+      
+      // INT4 kernel WGSL
+      const int4Shader = `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const M = ${M}u;
+const K = ${K}u;
+const N = ${N}u;
+const GROUP_SIZE = ${GROUP_SIZE}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+
+fn extract_int4(packed: u32, idx: u32) -> f32 {
+  let shift = (idx % 8u) * 4u;
+  let val = (packed >> shift) & 0xFu;
+  return f32(val) - 8.0;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  let total = M * N;
+  if (idx >= total) { return; }
+  
+  let row = idx / N;
+  let col = idx % N;
+  
+  var sum = 0.0;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx = packed_idx + 1u) {
+    let k_base = packed_idx * 8u;
+    let packed = b_packed[col * PACKED_K + packed_idx];
+    
+    for (var sub = 0u; sub < 8u; sub = sub + 1u) {
+      let k_idx = k_base + sub;
+      if (k_idx >= K) { break; }
+      let group_idx = k_idx / GROUP_SIZE;
+      let scale = scales[col * NUM_GROUPS + group_idx];
+      let w = extract_int4(packed, sub) * scale;
+      sum = sum + a[row * K + k_idx] * w;
+    }
+  }
+  
+  output[idx] = sum;
+}`;
+
+      // FP32 kernel for comparison
+      const fp32Shader = `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const M = ${M}u;
+const K = ${K}u;
+const N = ${N}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  let total = M * N;
+  if (idx >= total) { return; }
+  
+  let row = idx / N;
+  let col = idx % N;
+  
+  var sum = 0.0;
+  for (var i = 0u; i < K; i = i + 1u) {
+    sum = sum + a[row * K + i] * b[i * N + col];
+  }
+  output[idx] = sum;
+}`;
+
+      // Create buffers
+      const aBuffer = device.createBuffer({ size: M * K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const bBuffer = device.createBuffer({ size: K * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const packedBuffer = device.createBuffer({ size: N * packedK * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const scalesBuffer = device.createBuffer({ size: N * numGroups * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const outFp32Buffer = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      const outInt4Buffer = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      
+      device.queue.writeBuffer(aBuffer, 0, a);
+      device.queue.writeBuffer(bBuffer, 0, b);
+      device.queue.writeBuffer(packedBuffer, 0, packed);
+      device.queue.writeBuffer(scalesBuffer, 0, scales);
+      
+      // Compile pipelines
+      const fp32Module = device.createShaderModule({ code: fp32Shader });
+      const int4Module = device.createShaderModule({ code: int4Shader });
+      
+      const fp32Pipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: fp32Module, entryPoint: 'main' }
+      });
+      
+      const int4Pipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: int4Module, entryPoint: 'main' }
+      });
+      
+      const fp32BindGroup = device.createBindGroup({
+        layout: fp32Pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: aBuffer } },
+          { binding: 1, resource: { buffer: bBuffer } },
+          { binding: 2, resource: { buffer: outFp32Buffer } }
+        ]
+      });
+      
+      const int4BindGroup = device.createBindGroup({
+        layout: int4Pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: aBuffer } },
+          { binding: 1, resource: { buffer: packedBuffer } },
+          { binding: 2, resource: { buffer: scalesBuffer } },
+          { binding: 3, resource: { buffer: outInt4Buffer } }
+        ]
+      });
+      
+      const workgroups = Math.ceil(M * N / 256);
+      
+      // Warmup
+      for (let i = 0; i < 10; i++) {
+        let enc = device.createCommandEncoder();
+        let pass = enc.beginComputePass();
+        pass.setPipeline(fp32Pipeline);
+        pass.setBindGroup(0, fp32BindGroup);
+        pass.dispatchWorkgroups(workgroups);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+        
+        enc = device.createCommandEncoder();
+        pass = enc.beginComputePass();
+        pass.setPipeline(int4Pipeline);
+        pass.setBindGroup(0, int4BindGroup);
+        pass.dispatchWorkgroups(workgroups);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+      
+      // Benchmark FP32
+      log('\n--- Benchmarking FP32 ---', 'header');
+      const iterations = 50;
+      let start = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(fp32Pipeline);
+        pass.setBindGroup(0, fp32BindGroup);
+        pass.dispatchWorkgroups(workgroups);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+      const fp32Time = (performance.now() - start) / iterations;
+      const fp32Gflops = (2 * M * K * N) / (fp32Time / 1000) / 1e9;
+      const fp32Bw = ((M * K + K * N) * 4) / (fp32Time / 1000) / 1e9;
+      log(`FP32: ${fp32Time.toFixed(2)}ms | ${fp32Gflops.toFixed(2)} GFLOPS | ${fp32Bw.toFixed(2)} GB/s`);
+      
+      // Benchmark INT4
+      log('\n--- Benchmarking INT4 ---', 'header');
+      start = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(int4Pipeline);
+        pass.setBindGroup(0, int4BindGroup);
+        pass.dispatchWorkgroups(workgroups);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      }
+      await device.queue.onSubmittedWorkDone();
+      const int4Time = (performance.now() - start) / iterations;
+      const int4MemoryRead = (M * K * 4) + (N * packedK * 4) + (N * numGroups * 4);
+      const int4Bw = int4MemoryRead / (int4Time / 1000) / 1e9;
+      const int4EffGflops = (2 * M * K * N) / (int4Time / 1000) / 1e9;
+      log(`INT4: ${int4Time.toFixed(2)}ms | ${int4EffGflops.toFixed(2)} effective GFLOPS | ${int4Bw.toFixed(2)} GB/s`);
+      
+      // Summary
+      log('\n=== SUMMARY ===', 'header');
+      const speedup = fp32Time / int4Time;
+      log(`Speedup: ${speedup.toFixed(2)}x`, speedup > 1.5 ? 'pass' : speedup > 1 ? 'warn' : 'fail');
+      log(`Memory reduction: ${(K * N * 4 / int4MemoryRead).toFixed(2)}x`);
+      
+      if (speedup < 1.5) {
+        log('\n⚠ INT4 not faster than expected. Possible causes:', 'warn');
+        log('  - Dequantization overhead too high', 'warn');
+        log('  - Need to optimize memory access patterns', 'warn');
+      }
+      
+      // Cleanup
+      aBuffer.destroy();
+      bBuffer.destroy();
+      packedBuffer.destroy();
+      scalesBuffer.destroy();
+      outFp32Buffer.destroy();
+      outInt4Buffer.destroy();
+      
+      log('\n=== TEST COMPLETE ===', 'header');
+    }
+    
+    test().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

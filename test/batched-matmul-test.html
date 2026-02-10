@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Batched MatMul Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Batched MatMul Test</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { GPURuntime, GraphExecutor } from '../src/runtime.js';
+    import { Compiler } from '../dist/bundle.js';
+    
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+    
+    async function runTests() {
+      log('=== Batched MatMul Tests ===\n');
+      
+      const runtime = new GPURuntime();
+      await runtime.init();
+      log('✓ Runtime initialized\n');
+
+      // Test 1: Simple 2D MatMul [2,3] @ [3,4] -> [2,4]
+      log('Test 1: 2D MatMul [2,3] @ [3,4] -> [2,4]');
+      try {
+        const graph1 = Compiler.createGraph();
+        const a1 = Compiler.input(graph1, [2, 3], "a");
+        const b1 = Compiler.input(graph1, [3, 4], "b");
+        const y1 = Compiler.matmul(graph1, a1, b1);
+        Compiler.markOutput(graph1, y1);
+        const compiled1 = Compiler.compile(graph1);
+        const executor1 = new GraphExecutor(runtime, compiled1);
+        await executor1.init();
+        
+        // A = [[1,2,3], [4,5,6]]
+        // B = [[1,0,0,0], [0,1,0,0], [0,0,1,0]]
+        // Result should be [[1,2,3,0], [4,5,6,0]]
+        const inputA1 = new Float32Array([1, 2, 3, 4, 5, 6]);
+        const inputB1 = new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0
+        ]);
+        const output1 = await executor1.execute(inputA1, inputB1);
+        log(`  Output: [${Array.from(output1)}]`);
+        log(`  Expected: [1,2,3,0, 4,5,6,0]`);
+        const expected1 = [1, 2, 3, 0, 4, 5, 6, 0];
+        const pass1 = expected1.every((v, i) => Math.abs(output1[i] - v) < 0.01);
+        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor1.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 2: Batched MatMul [2,2,3] @ [2,3,4] -> [2,2,4]
+      log('Test 2: Batched MatMul [2,2,3] @ [2,3,4] -> [2,2,4]');
+      try {
+        const graph2 = Compiler.createGraph();
+        const a2 = Compiler.input(graph2, [2, 2, 3], "a");
+        const b2 = Compiler.input(graph2, [2, 3, 4], "b");
+        const y2 = Compiler.matmul(graph2, a2, b2);
+        Compiler.markOutput(graph2, y2);
+        const compiled2 = Compiler.compile(graph2);
+        log(`  Compiled: ${compiled2.ops.length} ops, ${compiled2.buffers.length} buffers`);
+        
+        const executor2 = new GraphExecutor(runtime, compiled2);
+        await executor2.init();
+        
+        // Batch 0: A = [[1,0,0], [0,1,0]], B = identity-like
+        // Batch 1: A = [[2,0,0], [0,2,0]], B = identity-like
+        const inputA2 = new Float32Array([
+          // Batch 0
+          1, 0, 0,
+          0, 1, 0,
+          // Batch 1
+          2, 0, 0,
+          0, 2, 0
+        ]);
+        const inputB2 = new Float32Array([
+          // Batch 0
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          // Batch 1
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0
+        ]);
+        const output2 = await executor2.execute(inputA2, inputB2);
+        log(`  Output: [${Array.from(output2)}]`);
+        // Batch 0: [[1,0,0,0], [0,1,0,0]]
+        // Batch 1: [[2,0,0,0], [0,2,0,0]]
+        log(`  Expected: [1,0,0,0, 0,1,0,0, 2,0,0,0, 0,2,0,0]`);
+        const expected2 = [1, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0];
+        const pass2 = expected2.every((v, i) => Math.abs(output2[i] - v) < 0.01);
+        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor2.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 3: Broadcast MatMul [2,2,3] @ [3,4] -> [2,2,4]
+      log('Test 3: Broadcast MatMul [2,2,3] @ [3,4] -> [2,2,4]');
+      try {
+        const graph3 = Compiler.createGraph();
+        const a3 = Compiler.input(graph3, [2, 2, 3], "a");
+        const b3 = Compiler.input(graph3, [3, 4], "b");
+        const y3 = Compiler.matmul(graph3, a3, b3);
+        Compiler.markOutput(graph3, y3);
+        const compiled3 = Compiler.compile(graph3);
+        log(`  Compiled: ${compiled3.ops.length} ops, ${compiled3.buffers.length} buffers`);
+        
+        const executor3 = new GraphExecutor(runtime, compiled3);
+        await executor3.init();
+        
+        // Same B matrix used for both batches
+        const inputA3 = new Float32Array([
+          // Batch 0
+          1, 0, 0,
+          0, 1, 0,
+          // Batch 1
+          2, 0, 0,
+          0, 2, 0
+        ]);
+        const inputB3 = new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0
+        ]);
+        const output3 = await executor3.execute(inputA3, inputB3);
+        log(`  Output: [${Array.from(output3)}]`);
+        log(`  Expected: [1,0,0,0, 0,1,0,0, 2,0,0,0, 0,2,0,0]`);
+        const expected3 = [1, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0];
+        const pass3 = expected3.every((v, i) => Math.abs(output3[i] - v) < 0.01);
+        log(`  ${pass3 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor3.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      // Test 4: Simple dot product style [1,4] @ [4,1] -> [1,1]
+      log('Test 4: Dot product [1,4] @ [4,1] -> [1,1]');
+      try {
+        const graph4 = Compiler.createGraph();
+        const a4 = Compiler.input(graph4, [1, 4], "a");
+        const b4 = Compiler.input(graph4, [4, 1], "b");
+        const y4 = Compiler.matmul(graph4, a4, b4);
+        Compiler.markOutput(graph4, y4);
+        const compiled4 = Compiler.compile(graph4);
+        const executor4 = new GraphExecutor(runtime, compiled4);
+        await executor4.init();
+        
+        const inputA4 = new Float32Array([1, 2, 3, 4]);
+        const inputB4 = new Float32Array([1, 1, 1, 1]);
+        const output4 = await executor4.execute(inputA4, inputB4);
+        log(`  [1,2,3,4] @ [1,1,1,1]^T = ${output4[0]}`);
+        log(`  Expected: 10`);
+        const pass4 = Math.abs(output4[0] - 10) < 0.01;
+        log(`  ${pass4 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        executor4.destroy();
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`);
+        console.error(e);
+      }
+
+      runtime.destroy();
+      log('=== All Batched MatMul Tests Completed ===');
+    }
+    
+    runTests();
+  </script>
+</body>
+</html>

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Autograd Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+  </style>
+</head>
+<body>
+  <h1>Autograd Test</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    import { GPURuntime } from '../src/runtime.js';
+    import { Autograd } from '../dist/bundle.js';
+    
+    const log = (msg, isPass = null) => {
+      const span = isPass === null ? msg : 
+        `<span class="${isPass ? 'pass' : 'fail'}">${msg}</span>`;
+      document.getElementById('output').innerHTML += span + '\n';
+      console.log(msg);
+    };
+    
+    // Helper to get result - handles single vs multiple outputs
+    const getResult = (results, name) => {
+      if (results instanceof Float32Array) return results;
+      return results[name];
+    };
+    
+    async function runTests() {
+      log('=== Autograd Backward Kernel Tests ===\n');
+      
+      const runtime = new GPURuntime();
+      await runtime.init();
+      log('✓ Runtime initialized\n');
+
+      // Test 1: ReLU backward
+      log('Test 1: ReLU backward');
+      try {
+        const kernel = Autograd.genReLUBackwardKernel(4);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          grad_out: new Float32Array([1, 1, 1, 1]),
+          x: new Float32Array([-1, 0, 1, 2])
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        const result = getResult(results, 'grad_x');
+        
+        log(`  grad_out: [${Array.from(inputs.grad_out)}]`);
+        log(`  x: [${Array.from(inputs.x)}]`);
+        log(`  grad_x: [${Array.from(result)}]`);
+        log(`  Expected: [0, 0, 1, 1]`);
+        
+        const expected = [0, 0, 1, 1];
+        const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
+        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 2: Sigmoid backward
+      log('Test 2: Sigmoid backward');
+      try {
+        const kernel = Autograd.genSigmoidBackwardKernel(4);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          grad_out: new Float32Array([1, 1, 1, 1]),
+          out: new Float32Array([0.5, 0.5, 0.731, 0.269])
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        const result = getResult(results, 'grad_x');
+        
+        // grad_x = sigmoid * (1 - sigmoid) * grad_out
+        const expected = inputs.out.map(s => s * (1 - s));
+        
+        log(`  grad_out: [${Array.from(inputs.grad_out)}]`);
+        log(`  sigmoid_out: [${Array.from(inputs.out)}]`);
+        log(`  grad_x: [${Array.from(result).map(x => x.toFixed(4))}]`);
+        log(`  Expected: [${Array.from(expected).map(x => x.toFixed(4))}]`);
+        
+        const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
+        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 3: Tanh backward
+      log('Test 3: Tanh backward');
+      try {
+        const kernel = Autograd.genTanhBackwardKernel(4);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          grad_out: new Float32Array([1, 1, 1, 1]),
+          out: new Float32Array([0, 0.5, 0.76, -0.76])
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        const result = getResult(results, 'grad_x');
+        
+        // grad = (1 - tanh^2) * grad_out
+        const expected = inputs.out.map(t => 1 - t * t);
+        
+        log(`  grad_out: [${Array.from(inputs.grad_out)}]`);
+        log(`  tanh_out: [${Array.from(inputs.out)}]`);
+        log(`  grad_x: [${Array.from(result).map(x => x.toFixed(4))}]`);
+        log(`  Expected: [${Array.from(expected).map(x => x.toFixed(4))}]`);
+        
+        const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
+        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 4: Exp backward
+      log('Test 4: Exp backward');
+      try {
+        const kernel = Autograd.genExpBackwardKernel(4);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          grad_out: new Float32Array([1, 1, 1, 1]),
+          out: new Float32Array([1, 2.718, 7.389, 0.368])
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        const result = getResult(results, 'grad_x');
+        
+        log(`  grad_out: [${Array.from(inputs.grad_out)}]`);
+        log(`  exp_out: [${Array.from(inputs.out)}]`);
+        log(`  grad_x: [${Array.from(result).map(x => x.toFixed(3))}]`);
+        log(`  Expected: [${Array.from(inputs.out).map(x => x.toFixed(3))}]`);
+        
+        const pass = inputs.out.every((v, i) => Math.abs(result[i] - v) < 0.01);
+        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 5: Mul backward
+      log('Test 5: Mul backward');
+      try {
+        const kernel = Autograd.genMulBackwardKernel(4);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          grad_out: new Float32Array([1, 2, 3, 4]),
+          a: new Float32Array([1, 2, 3, 4]),
+          b: new Float32Array([4, 3, 2, 1])
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        
+        const expectedGradA = inputs.grad_out.map((g, i) => g * inputs.b[i]);
+        const expectedGradB = inputs.grad_out.map((g, i) => g * inputs.a[i]);
+        
+        log(`  a: [${Array.from(inputs.a)}], b: [${Array.from(inputs.b)}]`);
+        log(`  grad_out: [${Array.from(inputs.grad_out)}]`);
+        log(`  grad_a: [${Array.from(results.grad_a)}] (expected: [${Array.from(expectedGradA)}])`);
+        log(`  grad_b: [${Array.from(results.grad_b)}] (expected: [${Array.from(expectedGradB)}])`);
+        
+        const passA = expectedGradA.every((v, i) => Math.abs(results.grad_a[i] - v) < 0.01);
+        const passB = expectedGradB.every((v, i) => Math.abs(results.grad_b[i] - v) < 0.01);
+        
+        log(`  ${passA && passB ? 'PASS ✓' : 'FAIL ✗'}\n`, passA && passB);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 6: Add backward
+      log('Test 6: Add backward');
+      try {
+        const kernel = Autograd.genAddBackwardKernel(4);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          grad_out: new Float32Array([1, 2, 3, 4])
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        
+        log(`  grad_out: [${Array.from(inputs.grad_out)}]`);
+        log(`  grad_a: [${Array.from(results.grad_a)}]`);
+        log(`  grad_b: [${Array.from(results.grad_b)}]`);
+        
+        const passA = inputs.grad_out.every((v, i) => Math.abs(results.grad_a[i] - v) < 0.01);
+        const passB = inputs.grad_out.every((v, i) => Math.abs(results.grad_b[i] - v) < 0.01);
+        
+        log(`  ${passA && passB ? 'PASS ✓' : 'FAIL ✗'}\n`, passA && passB);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 7: MatMul backward for A
+      log('Test 7: MatMul backward for A');
+      try {
+        const m = 2, k = 3, n = 2;
+        const kernel = Autograd.genMatMulBackwardAKernel(m, k, n);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          grad_out: new Float32Array([1, 0, 0, 1]),
+          b: new Float32Array([1, 2, 3, 4, 5, 6])
+        };
+        
+        const dispatch = { workgroupCount: [Math.ceil(k / 16), Math.ceil(m / 16), 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        const result = getResult(results, 'grad_a');
+        
+        log(`  grad_out (dL/dC): [[1,0], [0,1]]`);
+        log(`  B: [[1,2], [3,4], [5,6]]`);
+        log(`  grad_A: [${Array.from(result)}]`);
+        log(`  Expected: [1,3,5, 2,4,6]`);
+        
+        const expected = [1, 3, 5, 2, 4, 6];
+        const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
+        
+        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 8: SGD optimizer
+      log('Test 8: SGD optimizer');
+      try {
+        const lr = 0.1;
+        const kernel = Autograd.genSGDKernel(4, lr);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          param: new Float32Array([1, 2, 3, 4]),
+          grad: new Float32Array([1, 1, 1, 1])
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        const result = getResult(results, 'param');
+        
+        const expected = [0.9, 1.9, 2.9, 3.9];
+        
+        log(`  param (before): [${Array.from(inputs.param)}]`);
+        log(`  grad: [${Array.from(inputs.grad)}]`);
+        log(`  param (after): [${Array.from(result).map(x => x.toFixed(2))}]`);
+        log(`  Expected: [${Array.from(expected).map(x => x.toFixed(2))}]`);
+        
+        const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
+        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 9: Adam optimizer
+      log('Test 9: Adam optimizer');
+      try {
+        const lr = 0.001, beta1 = 0.9, beta2 = 0.999, epsilon = 1e-8, t = 1;
+        const kernel = Autograd.genAdamKernel(4, lr, beta1, beta2, epsilon, t);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          param: new Float32Array([1, 2, 3, 4]),
+          grad: new Float32Array([0.1, 0.2, 0.3, 0.4]),
+          m: new Float32Array(4),
+          v: new Float32Array(4)
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        
+        log(`  param (before): [${Array.from(inputs.param)}]`);
+        log(`  grad: [${Array.from(inputs.grad)}]`);
+        log(`  param (after): [${Array.from(results.param).map(x => x.toFixed(6))}]`);
+        log(`  m (first moment): [${Array.from(results.m).map(x => x.toFixed(6))}]`);
+        log(`  v (second moment): [${Array.from(results.v).map(x => x.toFixed(8))}]`);
+        
+        const mExpected = inputs.grad.map(g => (1 - beta1) * g);
+        const vExpected = inputs.grad.map(g => (1 - beta2) * g * g);
+        
+        const passM = mExpected.every((v, i) => Math.abs(results.m[i] - v) < 0.001);
+        const passV = vExpected.every((v, i) => Math.abs(results.v[i] - v) < 0.0001);
+        
+        log(`  Moments updated correctly: ${passM && passV ? 'PASS ✓' : 'FAIL ✗'}\n`, passM && passV);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 10: Softmax backward
+      log('Test 10: Softmax backward');
+      try {
+        const outerSize = 2, axisSize = 3;
+        const kernel = Autograd.genSoftmaxBackwardKernel(outerSize, axisSize);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const softmaxOut = new Float32Array([0.09, 0.24, 0.67, 0.33, 0.33, 0.34]);
+        const gradOut = new Float32Array([1, 0, 0, 0, 1, 0]);
+        
+        const inputs = {
+          grad_out: gradOut,
+          softmax_out: softmaxOut
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        const result = getResult(results, 'grad_x');
+        
+        log(`  softmax_out: [${Array.from(softmaxOut).map(x => x.toFixed(2))}]`);
+        log(`  grad_out: [${Array.from(gradOut)}]`);
+        log(`  grad_x: [${Array.from(result).map(x => x.toFixed(4))}]`);
+        
+        // Softmax backward gradients should sum to ~0 per row
+        const row1Sum = result[0] + result[1] + result[2];
+        const row2Sum = result[3] + result[4] + result[5];
+        
+        log(`  Row sums (should be ~0): ${row1Sum.toFixed(6)}, ${row2Sum.toFixed(6)}`);
+        const pass = Math.abs(row1Sum) < 0.01 && Math.abs(row2Sum) < 0.01;
+        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      // Test 11: Log backward
+      log('Test 11: Log backward');
+      try {
+        const kernel = Autograd.genLogBackwardKernel(4);
+        log(`  Kernel: ${kernel.name}`);
+        
+        const inputs = {
+          grad_out: new Float32Array([1, 1, 1, 1]),
+          x: new Float32Array([1, 2, 4, 0.5])
+        };
+        
+        const dispatch = { workgroupCount: [1, 1, 1] };
+        const results = await runtime.execute(kernel, dispatch, inputs);
+        const result = getResult(results, 'grad_x');
+        
+        // grad = grad_out / x
+        const expected = inputs.x.map(x => 1 / x);
+        
+        log(`  grad_out: [${Array.from(inputs.grad_out)}]`);
+        log(`  x: [${Array.from(inputs.x)}]`);
+        log(`  grad_x: [${Array.from(result).map(x => x.toFixed(4))}]`);
+        log(`  Expected: [${Array.from(expected).map(x => x.toFixed(4))}]`);
+        
+        const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
+        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+      } catch (e) {
+        log(`  FAIL ✗: ${e.message}\n`, false);
+        console.error(e);
+      }
+
+      runtime.destroy();
+      log('\n=== All Autograd Tests Completed ===');
+    }
+    
+    runTests();
+  </script>
+</body>
+</html>

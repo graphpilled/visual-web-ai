@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>LM Head V2 Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+    .info { color: #60a5fa; }
+    button { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      margin: 10px 5px;
+      cursor: pointer;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:hover { background: #6366f1; }
+  </style>
+</head>
+<body>
+  <h1>🚀 LM Head V2 Test</h1>
+  <p>GPU-based argmax - no chunking overhead!</p>
+  <button onclick="runTests()">Run All Tests</button>
+  <button onclick="runBenchmark()">Benchmark All Versions</button>
+  <pre id="output"></pre>
+
+  <script src="lm-head.js"></script>
+  <script src="lm-head-v2.js"></script>
+  <script>
+    let device = null;
+    
+    const log = (msg, cls = '') => {
+      const output = document.getElementById('output');
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      output.innerHTML += span + '\n';
+      output.scrollTop = output.scrollHeight;
+    };
+    
+    const clear = () => {
+      document.getElementById('output').innerHTML = '';
+    };
+
+    const TEST_VOCAB_SIZE = 32000;
+    const TEST_HIDDEN_SIZE = 3584;
+    const QWEN_VOCAB_SIZE = 152064;
+
+    function f32ToF16(f32) {
+      const f32View = new Float32Array([f32]);
+      const u32View = new Uint32Array(f32View.buffer);
+      const f32Bits = u32View[0];
+      const sign = (f32Bits >> 16) & 0x8000;
+      const exp = ((f32Bits >> 23) & 0xFF) - 127 + 15;
+      const mantissa = (f32Bits >> 13) & 0x3FF;
+      if (exp <= 0) return sign;
+      if (exp >= 31) return sign | 0x7C00;
+      return sign | (exp << 10) | mantissa;
+    }
+    
+    function packF16Pair(f16Low, f16High) {
+      return (f16High << 16) | f16Low;
+    }
+
+    function createTestWeights(vocabSize, hiddenSize) {
+      const packedSize = vocabSize * (hiddenSize / 2);
+      const weights = new Uint32Array(packedSize);
+      
+      for (let v = 0; v < vocabSize; v++) {
+        const w = (v + 1) / vocabSize;
+        for (let d = 0; d < hiddenSize / 2; d++) {
+          const f16 = f32ToF16(w / hiddenSize);
+          weights[v * (hiddenSize / 2) + d] = packF16Pair(f16, f16);
+        }
+      }
+      return weights;
+    }
+
+    async function initWebGPU() {
+      if (device) return device;
+      if (!navigator.gpu) throw new Error('WebGPU not supported');
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error('No GPU adapter');
+      device = await adapter.requestDevice({
+        requiredLimits: {
+          maxComputeWorkgroupsPerDimension: 65535,
+          maxStorageBufferBindingSize: 2 * 1024 * 1024 * 1024,
+        }
+      });
+      log('✅ WebGPU initialized', 'pass');
+      return device;
+    }
+
+    async function runTests() {
+      clear();
+      log('=== LM Head V2 Tests ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        const vocabSize = TEST_VOCAB_SIZE;
+        const hiddenSize = TEST_HIDDEN_SIZE;
+        
+        log(`Config: vocab=${vocabSize}, hidden=${hiddenSize}`, 'info');
+        
+        // Create weights and hidden
+        const weights = createTestWeights(vocabSize, hiddenSize);
+        const weightBuffer = device.createBuffer({
+          size: weights.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Uint32Array(weightBuffer.getMappedRange()).set(weights);
+        weightBuffer.unmap();
+        
+        const hidden = new Float32Array(hiddenSize).fill(1.0);
+        const hiddenBuffer = device.createBuffer({
+          size: hidden.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Float32Array(hiddenBuffer.getMappedRange()).set(hidden);
+        hiddenBuffer.unmap();
+        
+        // Test V2 (argmax)
+        log('\n--- Test 1: LM Head V2 Argmax ---', 'header');
+        
+        const lmHeadV2 = new LMHeadV2(device, vocabSize, hiddenSize);
+        lmHeadV2.setWeightBuffer(weightBuffer);
+        await lmHeadV2.init();
+        
+        const result = await lmHeadV2.forwardArgmax(hiddenBuffer);
+        
+        log(`  Argmax index: ${result.index}`);
+        log(`  Argmax value: ${result.value.toFixed(4)}`);
+        
+        // With our weights, highest index should have highest logit
+        const expectedMax = vocabSize - 1;
+        const isCorrect = result.index === expectedMax;
+        log(`  Expected max at: ${expectedMax}`);
+        log(`  ${isCorrect ? '✅ PASS' : '❌ FAIL'}`, isCorrect ? 'pass' : 'fail');
+        
+        // Compare with original
+        log('\n--- Test 2: Verify Against Original ---', 'header');
+        
+        const lmHeadOriginal = new LMHead(device, vocabSize, hiddenSize);
+        lmHeadOriginal.setWeightBuffer(weightBuffer);
+        await lmHeadOriginal.init();
+        
+        lmHeadOriginal.forward(hiddenBuffer);
+        await device.queue.onSubmittedWorkDone();
+        
+        // Read original logits
+        const readBuffer = device.createBuffer({
+          size: vocabSize * 4,
+          usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+        });
+        const cmd = device.createCommandEncoder();
+        cmd.copyBufferToBuffer(lmHeadOriginal.getLogitsBuffer(), 0, readBuffer, 0, vocabSize * 4);
+        device.queue.submit([cmd.finish()]);
+        
+        await readBuffer.mapAsync(GPUMapMode.READ);
+        const allLogits = new Float32Array(readBuffer.getMappedRange().slice(0));
+        readBuffer.unmap();
+        readBuffer.destroy();
+        
+        // Find CPU argmax
+        let cpuMaxIdx = 0;
+        let cpuMaxVal = allLogits[0];
+        for (let i = 1; i < vocabSize; i++) {
+          if (allLogits[i] > cpuMaxVal) {
+            cpuMaxVal = allLogits[i];
+            cpuMaxIdx = i;
+          }
+        }
+        
+        log(`  Original argmax: index=${cpuMaxIdx}, value=${cpuMaxVal.toFixed(4)}`);
+        log(`  V2 argmax: index=${result.index}, value=${result.value.toFixed(4)}`);
+        
+        const matchesOriginal = result.index === cpuMaxIdx;
+        log(`  ${matchesOriginal ? '✅ PASS' : '❌ FAIL'}`, matchesOriginal ? 'pass' : 'fail');
+        
+        // Test V3 (top-k)
+        log('\n--- Test 3: LM Head V3 Top-K ---', 'header');
+        
+        const topK = 10;
+        const lmHeadV3 = new LMHeadV3(device, vocabSize, hiddenSize, topK);
+        lmHeadV3.setWeightBuffer(weightBuffer);
+        await lmHeadV3.init();
+        
+        const topKResult = await lmHeadV3.forwardTopK(hiddenBuffer);
+        
+        log(`  Top-${topK} indices: [${Array.from(topKResult.indices).join(', ')}]`);
+        log(`  Top-${topK} values: [${Array.from(topKResult.values).map(v => v.toFixed(2)).join(', ')}]`);
+        
+        // Verify ordering
+        let isOrdered = true;
+        for (let i = 1; i < topK; i++) {
+          if (topKResult.values[i] > topKResult.values[i-1]) {
+            isOrdered = false;
+            break;
+          }
+        }
+        
+        // Verify top-1 matches argmax
+        const top1Matches = topKResult.indices[0] === result.index;
+        
+        log(`  Values descending: ${isOrdered ? '✅' : '❌'}`);
+        log(`  Top-1 matches argmax: ${top1Matches ? '✅' : '❌'}`);
+        log(`  ${isOrdered && top1Matches ? '✅ PASS' : '❌ FAIL'}`, isOrdered && top1Matches ? 'pass' : 'fail');
+        
+        // Cleanup
+        lmHeadV2.destroy();
+        lmHeadV3.destroy();
+        lmHeadOriginal.destroy();
+        hiddenBuffer.destroy();
+        weightBuffer.destroy();
+        
+        log('\n✅ All tests complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+
+    async function runBenchmark() {
+      clear();
+      log('=== LM Head Benchmark: All Versions ===\n', 'header');
+      
+      try {
+        await initWebGPU();
+        
+        const vocabSize = TEST_VOCAB_SIZE;
+        const hiddenSize = TEST_HIDDEN_SIZE;
+        const iterations = 20;
+        
+        log(`Config: vocab=${vocabSize}, hidden=${hiddenSize}`, 'info');
+        log(`Iterations: ${iterations}\n`);
+        
+        // Create weights and hidden
+        const weights = createTestWeights(vocabSize, hiddenSize);
+        const weightBuffer = device.createBuffer({
+          size: weights.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true
+        });
+        new Uint32Array(weightBuffer.getMappedRange()).set(weights);
+        weightBuffer.unmap();
+        
+        const hiddenBuffer = device.createBuffer({
+          size: hiddenSize * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+        
+        // --- Original LM Head ---
+        log('--- Original (all logits to CPU) ---', 'header');
+        const lmHeadOriginal = new LMHead(device, vocabSize, hiddenSize);
+        lmHeadOriginal.setWeightBuffer(weightBuffer);
+        await lmHeadOriginal.init();
+        
+        for (let i = 0; i < 5; i++) {
+          lmHeadOriginal.forward(hiddenBuffer);
+          await device.queue.onSubmittedWorkDone();
+        }
+        
+        let start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          lmHeadOriginal.forward(hiddenBuffer);
+          await device.queue.onSubmittedWorkDone();
+        }
+        const originalTime = (performance.now() - start) / iterations;
+        log(`  Average: ${originalTime.toFixed(2)} ms`);
+        log(`  Data to CPU: ${(vocabSize * 4 / 1024).toFixed(1)} KB`);
+        
+        // --- V2 (GPU argmax) ---
+        log('\n--- V2 (GPU argmax) ---', 'header');
+        const lmHeadV2 = new LMHeadV2(device, vocabSize, hiddenSize);
+        lmHeadV2.setWeightBuffer(weightBuffer);
+        await lmHeadV2.init();
+        
+        for (let i = 0; i < 5; i++) {
+          await lmHeadV2.forwardArgmax(hiddenBuffer);
+        }
+        
+        start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          await lmHeadV2.forwardArgmax(hiddenBuffer);
+        }
+        const v2Time = (performance.now() - start) / iterations;
+        log(`  Average: ${v2Time.toFixed(2)} ms`);
+        log(`  Data to CPU: 8 bytes`);
+        log(`  Speedup vs original: ${(originalTime / v2Time).toFixed(2)}x`);
+        
+        // --- V3 (GPU top-k) ---
+        log('\n--- V3 (GPU top-50) ---', 'header');
+        const topK = 50;
+        const lmHeadV3 = new LMHeadV3(device, vocabSize, hiddenSize, topK);
+        lmHeadV3.setWeightBuffer(weightBuffer);
+        await lmHeadV3.init();
+        
+        for (let i = 0; i < 5; i++) {
+          await lmHeadV3.forwardTopK(hiddenBuffer);
+        }
+        
+        start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          await lmHeadV3.forwardTopK(hiddenBuffer);
+        }
+        const v3Time = (performance.now() - start) / iterations;
+        log(`  Average: ${v3Time.toFixed(2)} ms`);
+        log(`  Data to CPU: ${topK * 8} bytes`);
+        log(`  Speedup vs original: ${(originalTime / v3Time).toFixed(2)}x`);
+        
+        // --- Summary ---
+        log('\n--- Summary ---', 'header');
+        log(`  Original:  ${originalTime.toFixed(2)} ms (baseline)`);
+        log(`  V2 Argmax: ${v2Time.toFixed(2)} ms (${(originalTime / v2Time).toFixed(2)}x faster)`, v2Time < originalTime ? 'pass' : 'fail');
+        log(`  V3 Top-50: ${v3Time.toFixed(2)} ms (${(originalTime / v3Time).toFixed(2)}x ${v3Time < originalTime ? 'faster' : 'slower'})`, v3Time < originalTime ? 'pass' : 'info');
+        
+        // Estimate for Qwen
+        log(`\n📊 Qwen2.5 Estimate (vocab=${QWEN_VOCAB_SIZE}):`, 'info');
+        const scale = QWEN_VOCAB_SIZE / vocabSize;
+        log(`  Original: ~${(originalTime * scale).toFixed(1)} ms`);
+        log(`  V2 Argmax: ~${(v2Time * scale).toFixed(1)} ms`);
+        
+        // Cleanup
+        lmHeadOriginal.destroy();
+        lmHeadV2.destroy();
+        lmHeadV3.destroy();
+        hiddenBuffer.destroy();
+        weightBuffer.destroy();
+        
+        log('\n✅ Benchmark complete!', 'pass');
+        
+      } catch (e) {
+        log(`\n❌ Error: ${e.message}`, 'fail');
+        console.error(e);
+      }
+    }
+  </script>
+</body>
+</html>

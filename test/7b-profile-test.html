@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>7B Model Profiling</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+    .hot { color: #ef4444; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>7B Model Performance Profiling</h1>
+  <p>Finding where the 70% bandwidth is being lost</p>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    // Quantization helper
+    function quantizeToInt4(weights, K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const packed = new Uint32Array(N * packedK);
+      const scales = new Float32Array(N * numGroups);
+      for (let col = 0; col < N; col++) {
+        for (let g = 0; g < numGroups; g++) {
+          const kStart = g * groupSize;
+          const kEnd = Math.min(kStart + groupSize, K);
+          let maxAbs = 0;
+          for (let k = kStart; k < kEnd; k++) {
+            maxAbs = Math.max(maxAbs, Math.abs(weights[k * N + col]));
+          }
+          scales[col * numGroups + g] = maxAbs > 0 ? maxAbs / 7.0 : 1.0;
+        }
+        for (let packedIdx = 0; packedIdx < packedK; packedIdx++) {
+          let packedVal = 0;
+          for (let sub = 0; sub < 8; sub++) {
+            const k = packedIdx * 8 + sub;
+            if (k >= K) break;
+            const groupIdx = Math.floor(k / groupSize);
+            const scale = scales[col * numGroups + groupIdx];
+            let int4Val = Math.round(weights[k * N + col] / scale) + 8;
+            int4Val = Math.max(0, Math.min(15, int4Val));
+            packedVal |= (int4Val << (sub * 4));
+          }
+          packed[col * packedK + packedIdx] = packedVal;
+        }
+      }
+      return { packed, scales, packedK, numGroups };
+    }
+
+    // Shaders
+    function createInt4MatMulShader(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${groupSize}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[s_offset + group_idx];
+    let p0 = b_packed[b_offset + packed_idx];
+    let p1 = b_packed[b_offset + packed_idx + 1u];
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    let w0 = vec4<f32>(
+      f32((p0 >>  0u) & 0xFu) - 8.0, f32((p0 >>  4u) & 0xFu) - 8.0,
+      f32((p0 >>  8u) & 0xFu) - 8.0, f32((p0 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w1 = vec4<f32>(
+      f32((p0 >> 16u) & 0xFu) - 8.0, f32((p0 >> 20u) & 0xFu) - 8.0,
+      f32((p0 >> 24u) & 0xFu) - 8.0, f32((p0 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    sum += dot(a0, w0) + dot(a1, w1);
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    let w2 = vec4<f32>(
+      f32((p1 >>  0u) & 0xFu) - 8.0, f32((p1 >>  4u) & 0xFu) - 8.0,
+      f32((p1 >>  8u) & 0xFu) - 8.0, f32((p1 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    let w3 = vec4<f32>(
+      f32((p1 >> 16u) & 0xFu) - 8.0, f32((p1 >> 20u) & 0xFu) - 8.0,
+      f32((p1 >> 24u) & 0xFu) - 8.0, f32((p1 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    sum += dot(a2, w2) + dot(a3, w3);
+  }
+  output[col] = sum;
+}`;
+    }
+
+    function createRMSNormShader(N) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const EPS = 1e-6;
+@compute @workgroup_size(1)
+fn main() {
+  var sum_sq = 0.0;
+  for (var i = 0u; i < N; i++) { sum_sq += input[i] * input[i]; }
+  let rms = sqrt(sum_sq / f32(N) + EPS);
+  for (var i = 0u; i < N; i++) { output[i] = (input[i] / rms) * weight[i]; }
+}`;
+    }
+
+    function createRoPEShader(numHeads, headDim) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> cos_cache: array<f32>;
+@group(0) @binding(2) var<storage, read> sin_cache: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+@group(0) @binding(4) var<uniform> pos: u32;
+const NUM_HEADS = ${numHeads}u;
+const HEAD_DIM = ${headDim}u;
+const HALF_DIM = ${headDim / 2}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= NUM_HEADS * HEAD_DIM) { return; }
+  let head = idx / HEAD_DIM;
+  let d = idx % HEAD_DIM;
+  let input_val = input[idx];
+  if (d < HALF_DIM) {
+    let cos_val = cos_cache[pos * HALF_DIM + d];
+    let sin_val = sin_cache[pos * HALF_DIM + d];
+    let x_rotate = input[head * HEAD_DIM + d + HALF_DIM];
+    output[idx] = input_val * cos_val - x_rotate * sin_val;
+  } else {
+    let d2 = d - HALF_DIM;
+    let cos_val = cos_cache[pos * HALF_DIM + d2];
+    let sin_val = sin_cache[pos * HALF_DIM + d2];
+    let x_rotate = input[head * HEAD_DIM + d2];
+    output[idx] = x_rotate * sin_val + input_val * cos_val;
+  }
+}`;
+    }
+
+    function createAttentionScoresShader(numHeads, headDim, maxSeqLen) {
+      return `
+@group(0) @binding(0) var<storage, read> q: array<f32>;
+@group(0) @binding(1) var<storage, read> k_cache: array<f32>;
+@group(0) @binding(2) var<storage, read_write> scores: array<f32>;
+@group(0) @binding(3) var<uniform> seq_len: u32;
+const NUM_HEADS = ${numHeads}u;
+const HEAD_DIM = ${headDim}u;
+const MAX_SEQ_LEN = ${maxSeqLen}u;
+const SCALE = ${1.0 / Math.sqrt(headDim)};
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= NUM_HEADS * seq_len) { return; }
+  let head = idx / seq_len;
+  let pos = idx % seq_len;
+  var sum = 0.0;
+  for (var d = 0u; d < HEAD_DIM; d++) {
+    sum += q[head * HEAD_DIM + d] * k_cache[head * MAX_SEQ_LEN * HEAD_DIM + pos * HEAD_DIM + d];
+  }
+  scores[idx] = sum * SCALE;
+}`;
+    }
+
+    function createSoftmaxShader(numHeads) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+@group(0) @binding(2) var<uniform> seq_len: u32;
+const NUM_HEADS = ${numHeads}u;
+@compute @workgroup_size(${numHeads})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let head = gid.x;
+  if (head >= NUM_HEADS) { return; }
+  let offset = head * seq_len;
+  var max_val = -1e10;
+  for (var i = 0u; i < seq_len; i++) { max_val = max(max_val, input[offset + i]); }
+  var sum = 0.0;
+  for (var i = 0u; i < seq_len; i++) {
+    let exp_val = exp(input[offset + i] - max_val);
+    output[offset + i] = exp_val;
+    sum += exp_val;
+  }
+  for (var i = 0u; i < seq_len; i++) { output[offset + i] /= sum; }
+}`;
+    }
+
+    function createAttentionOutputShader(numHeads, headDim, maxSeqLen) {
+      return `
+@group(0) @binding(0) var<storage, read> scores: array<f32>;
+@group(0) @binding(1) var<storage, read> v_cache: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+@group(0) @binding(3) var<uniform> seq_len: u32;
+const NUM_HEADS = ${numHeads}u;
+const HEAD_DIM = ${headDim}u;
+const MAX_SEQ_LEN = ${maxSeqLen}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= NUM_HEADS * HEAD_DIM) { return; }
+  let head = idx / HEAD_DIM;
+  let d = idx % HEAD_DIM;
+  var sum = 0.0;
+  for (var pos = 0u; pos < seq_len; pos++) {
+    sum += scores[head * seq_len + pos] * v_cache[head * MAX_SEQ_LEN * HEAD_DIM + pos * HEAD_DIM + d];
+  }
+  output[idx] = sum;
+}`;
+    }
+
+    function createSiLUShader(N) {
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= N) { return; }
+  let x = input[idx];
+  output[idx] = x / (1.0 + exp(-x));
+}`;
+    }
+
+    function createAddShader(N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= N) { return; }
+  output[idx] = a[idx] + b[idx];
+}`;
+    }
+
+    function createMulShader(N) {
+      return `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= N) { return; }
+  output[idx] = a[idx] * b[idx];
+}`;
+    }
+
+    async function profile() {
+      log('=== 7B Model Performance Profiling ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      log(`GPU: ${adapter.info?.vendor || 'unknown'}\n`);
+      
+      // 7B config (Llama-7B / Qwen-7B style)
+      const config = {
+        hidden_size: 4096,
+        intermediate_size: 11008,
+        num_heads: 32,
+        head_dim: 128,
+        num_kv_heads: 32,  // Could be less for GQA
+        max_seq_len: 2048,
+        num_layers: 32,
+        group_size: 128
+      };
+      
+      log('7B Model Config:', 'header');
+      log(`  hidden_size: ${config.hidden_size}`);
+      log(`  intermediate_size: ${config.intermediate_size}`);
+      log(`  num_heads: ${config.num_heads}`);
+      log(`  num_layers: ${config.num_layers}\n`);
+      
+      // Calculate theoretical minimum
+      const weightsPerLayer = 
+        4 * config.hidden_size * config.hidden_size +  // Q, K, V, O
+        3 * config.hidden_size * config.intermediate_size;  // gate, up, down
+      const totalWeights = config.num_layers * weightsPerLayer;
+      const int4Size = totalWeights / 2;  // INT4 = 0.5 bytes per weight
+      const scaleOverhead = totalWeights / config.group_size * 4;  // FP32 scales
+      const totalBytes = int4Size + scaleOverhead;
+      
+      log('--- Theoretical Limits ---', 'header');
+      log(`Total INT4 weights: ${(int4Size / 1024 / 1024).toFixed(1)} MB`);
+      log(`Scale overhead: ${(scaleOverhead / 1024 / 1024).toFixed(1)} MB`);
+      log(`Total memory per token: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`);
+      log(`At 15 GB/s: ${(totalBytes / 15e9 * 1000).toFixed(1)}ms minimum`);
+      log(`Theoretical max: ${(15e9 / totalBytes).toFixed(1)} tok/s\n`);
+      
+      // Profile individual operations
+      log('--- Profiling Individual Operations ---\n', 'header');
+      
+      const { hidden_size, intermediate_size, num_heads, head_dim, max_seq_len, group_size } = config;
+      
+      const results = [];
+      
+      // Helper to benchmark a shader
+      async function benchmarkOp(name, shader, bufferSetup, workgroups, iterations = 100) {
+        const { buffers, entries } = bufferSetup();
+        
+        const module = device.createShaderModule({ code: shader });
+        const pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+        
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries
+        });
+        
+        // Warmup
+        for (let i = 0; i < 20; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Benchmark
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const elapsed = (performance.now() - start) / iterations;
+        
+        // Cleanup
+        for (const buf of buffers) buf.destroy();
+        
+        return elapsed;
+      }
+      
+      // 1. QKV Projection (hidden -> hidden)
+      log('1. Q/K/V/O Projection [4096 -> 4096]...', 'info');
+      {
+        const K = hidden_size, N = hidden_size;
+        const q = quantizeToInt4(new Float32Array(K * N).fill(0.01), K, N, group_size);
+        
+        const time = await benchmarkOp(
+          'QKV',
+          createInt4MatMulShader(K, N, group_size),
+          () => {
+            const aBuf = device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const bBuf = device.createBuffer({ size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const sBuf = device.createBuffer({ size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const oBuf = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+            device.queue.writeBuffer(bBuf, 0, q.packed);
+            device.queue.writeBuffer(sBuf, 0, q.scales);
+            return {
+              buffers: [aBuf, bBuf, sBuf, oBuf],
+              entries: [
+                { binding: 0, resource: { buffer: aBuf } },
+                { binding: 1, resource: { buffer: bBuf } },
+                { binding: 2, resource: { buffer: sBuf } },
+                { binding: 3, resource: { buffer: oBuf } }
+              ]
+            };
+          },
+          Math.ceil(N / 256)
+        );
+        
+        const bytes = K * 4 + q.packed.byteLength + q.scales.byteLength;
+        const bw = bytes / (time / 1000) / 1e9;
+        results.push({ name: 'Q/K/V/O proj', time, perLayer: time * 4, bytes, bw });
+        log(`   ${time.toFixed(2)}ms | ${bw.toFixed(2)} GB/s | x4 per layer = ${(time * 4).toFixed(2)}ms`);
+      }
+      
+      // 2. Gate/Up Projection (hidden -> intermediate)
+      log('2. Gate/Up Projection [4096 -> 11008]...', 'info');
+      {
+        const K = hidden_size, N = intermediate_size;
+        const q = quantizeToInt4(new Float32Array(K * N).fill(0.01), K, N, group_size);
+        
+        const time = await benchmarkOp(
+          'Gate',
+          createInt4MatMulShader(K, N, group_size),
+          () => {
+            const aBuf = device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const bBuf = device.createBuffer({ size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const sBuf = device.createBuffer({ size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const oBuf = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+            device.queue.writeBuffer(bBuf, 0, q.packed);
+            device.queue.writeBuffer(sBuf, 0, q.scales);
+            return {
+              buffers: [aBuf, bBuf, sBuf, oBuf],
+              entries: [
+                { binding: 0, resource: { buffer: aBuf } },
+                { binding: 1, resource: { buffer: bBuf } },
+                { binding: 2, resource: { buffer: sBuf } },
+                { binding: 3, resource: { buffer: oBuf } }
+              ]
+            };
+          },
+          Math.ceil(N / 256)
+        );
+        
+        const bytes = K * 4 + q.packed.byteLength + q.scales.byteLength;
+        const bw = bytes / (time / 1000) / 1e9;
+        results.push({ name: 'Gate/Up proj', time, perLayer: time * 2, bytes, bw });
+        log(`   ${time.toFixed(2)}ms | ${bw.toFixed(2)} GB/s | x2 per layer = ${(time * 2).toFixed(2)}ms`);
+      }
+      
+      // 3. Down Projection (intermediate -> hidden)
+      log('3. Down Projection [11008 -> 4096]...', 'info');
+      {
+        const K = intermediate_size, N = hidden_size;
+        const q = quantizeToInt4(new Float32Array(K * N).fill(0.01), K, N, group_size);
+        
+        const time = await benchmarkOp(
+          'Down',
+          createInt4MatMulShader(K, N, group_size),
+          () => {
+            const aBuf = device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const bBuf = device.createBuffer({ size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const sBuf = device.createBuffer({ size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const oBuf = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+            device.queue.writeBuffer(bBuf, 0, q.packed);
+            device.queue.writeBuffer(sBuf, 0, q.scales);
+            return {
+              buffers: [aBuf, bBuf, sBuf, oBuf],
+              entries: [
+                { binding: 0, resource: { buffer: aBuf } },
+                { binding: 1, resource: { buffer: bBuf } },
+                { binding: 2, resource: { buffer: sBuf } },
+                { binding: 3, resource: { buffer: oBuf } }
+              ]
+            };
+          },
+          Math.ceil(N / 256)
+        );
+        
+        const bytes = K * 4 + q.packed.byteLength + q.scales.byteLength;
+        const bw = bytes / (time / 1000) / 1e9;
+        results.push({ name: 'Down proj', time, perLayer: time, bytes, bw });
+        log(`   ${time.toFixed(2)}ms | ${bw.toFixed(2)} GB/s`);
+      }
+      
+      // 4. RMSNorm
+      log('4. RMSNorm [4096]...', 'info');
+      {
+        const time = await benchmarkOp(
+          'RMSNorm',
+          createRMSNormShader(hidden_size),
+          () => {
+            const iBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            const wBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const oBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            device.queue.writeBuffer(wBuf, 0, new Float32Array(hidden_size).fill(1));
+            return {
+              buffers: [iBuf, wBuf, oBuf],
+              entries: [
+                { binding: 0, resource: { buffer: iBuf } },
+                { binding: 1, resource: { buffer: wBuf } },
+                { binding: 2, resource: { buffer: oBuf } }
+              ]
+            };
+          },
+          1
+        );
+        results.push({ name: 'RMSNorm', time, perLayer: time * 2 });
+        log(`   ${time.toFixed(2)}ms | x2 per layer = ${(time * 2).toFixed(2)}ms`);
+      }
+      
+      // 5. RoPE
+      log('5. RoPE [32 heads x 128 dim]...', 'info');
+      {
+        const halfDim = head_dim / 2;
+        const cosCache = new Float32Array(max_seq_len * halfDim);
+        const sinCache = new Float32Array(max_seq_len * halfDim);
+        
+        const time = await benchmarkOp(
+          'RoPE',
+          createRoPEShader(num_heads, head_dim),
+          () => {
+            const iBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            const cBuf = device.createBuffer({ size: cosCache.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const sBuf = device.createBuffer({ size: sinCache.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            const oBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            const pBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            device.queue.writeBuffer(cBuf, 0, cosCache);
+            device.queue.writeBuffer(sBuf, 0, sinCache);
+            device.queue.writeBuffer(pBuf, 0, new Uint32Array([100]));
+            return {
+              buffers: [iBuf, cBuf, sBuf, oBuf, pBuf],
+              entries: [
+                { binding: 0, resource: { buffer: iBuf } },
+                { binding: 1, resource: { buffer: cBuf } },
+                { binding: 2, resource: { buffer: sBuf } },
+                { binding: 3, resource: { buffer: oBuf } },
+                { binding: 4, resource: { buffer: pBuf } }
+              ]
+            };
+          },
+          Math.ceil(hidden_size / 256)
+        );
+        results.push({ name: 'RoPE', time, perLayer: time * 2 });
+        log(`   ${time.toFixed(2)}ms | x2 per layer = ${(time * 2).toFixed(2)}ms`);
+      }
+      
+      // 6. Attention Scores (at seq_len=100)
+      log('6. Attention Scores [seq_len=100]...', 'info');
+      {
+        const seqLen = 100;
+        const time = await benchmarkOp(
+          'AttnScores',
+          createAttentionScoresShader(num_heads, head_dim, max_seq_len),
+          () => {
+            const qBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            const kBuf = device.createBuffer({ size: num_heads * max_seq_len * head_dim * 4, usage: GPUBufferUsage.STORAGE });
+            const oBuf = device.createBuffer({ size: num_heads * max_seq_len * 4, usage: GPUBufferUsage.STORAGE });
+            const sBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            device.queue.writeBuffer(sBuf, 0, new Uint32Array([seqLen]));
+            return {
+              buffers: [qBuf, kBuf, oBuf, sBuf],
+              entries: [
+                { binding: 0, resource: { buffer: qBuf } },
+                { binding: 1, resource: { buffer: kBuf } },
+                { binding: 2, resource: { buffer: oBuf } },
+                { binding: 3, resource: { buffer: sBuf } }
+              ]
+            };
+          },
+          Math.ceil(num_heads * seqLen / 256)
+        );
+        results.push({ name: 'Attn Scores', time, perLayer: time });
+        log(`   ${time.toFixed(2)}ms`);
+      }
+      
+      // 7. Softmax
+      log('7. Softmax [32 heads, seq_len=100]...', 'info');
+      {
+        const seqLen = 100;
+        const time = await benchmarkOp(
+          'Softmax',
+          createSoftmaxShader(num_heads),
+          () => {
+            const iBuf = device.createBuffer({ size: num_heads * max_seq_len * 4, usage: GPUBufferUsage.STORAGE });
+            const oBuf = device.createBuffer({ size: num_heads * max_seq_len * 4, usage: GPUBufferUsage.STORAGE });
+            const sBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            device.queue.writeBuffer(sBuf, 0, new Uint32Array([seqLen]));
+            return {
+              buffers: [iBuf, oBuf, sBuf],
+              entries: [
+                { binding: 0, resource: { buffer: iBuf } },
+                { binding: 1, resource: { buffer: oBuf } },
+                { binding: 2, resource: { buffer: sBuf } }
+              ]
+            };
+          },
+          1
+        );
+        results.push({ name: 'Softmax', time, perLayer: time });
+        log(`   ${time.toFixed(2)}ms`);
+      }
+      
+      // 8. Attention Output
+      log('8. Attention Output [seq_len=100]...', 'info');
+      {
+        const seqLen = 100;
+        const time = await benchmarkOp(
+          'AttnOut',
+          createAttentionOutputShader(num_heads, head_dim, max_seq_len),
+          () => {
+            const sBuf2 = device.createBuffer({ size: num_heads * max_seq_len * 4, usage: GPUBufferUsage.STORAGE });
+            const vBuf = device.createBuffer({ size: num_heads * max_seq_len * head_dim * 4, usage: GPUBufferUsage.STORAGE });
+            const oBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            const slBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            device.queue.writeBuffer(slBuf, 0, new Uint32Array([seqLen]));
+            return {
+              buffers: [sBuf2, vBuf, oBuf, slBuf],
+              entries: [
+                { binding: 0, resource: { buffer: sBuf2 } },
+                { binding: 1, resource: { buffer: vBuf } },
+                { binding: 2, resource: { buffer: oBuf } },
+                { binding: 3, resource: { buffer: slBuf } }
+              ]
+            };
+          },
+          Math.ceil(hidden_size / 256)
+        );
+        results.push({ name: 'Attn Output', time, perLayer: time });
+        log(`   ${time.toFixed(2)}ms`);
+      }
+      
+      // 9. SiLU
+      log('9. SiLU [11008]...', 'info');
+      {
+        const time = await benchmarkOp(
+          'SiLU',
+          createSiLUShader(intermediate_size),
+          () => {
+            const iBuf = device.createBuffer({ size: intermediate_size * 4, usage: GPUBufferUsage.STORAGE });
+            const oBuf = device.createBuffer({ size: intermediate_size * 4, usage: GPUBufferUsage.STORAGE });
+            return {
+              buffers: [iBuf, oBuf],
+              entries: [
+                { binding: 0, resource: { buffer: iBuf } },
+                { binding: 1, resource: { buffer: oBuf } }
+              ]
+            };
+          },
+          Math.ceil(intermediate_size / 256)
+        );
+        results.push({ name: 'SiLU', time, perLayer: time });
+        log(`   ${time.toFixed(2)}ms`);
+      }
+      
+      // 10. Element-wise Mul
+      log('10. Mul [11008]...', 'info');
+      {
+        const time = await benchmarkOp(
+          'Mul',
+          createMulShader(intermediate_size),
+          () => {
+            const aBuf = device.createBuffer({ size: intermediate_size * 4, usage: GPUBufferUsage.STORAGE });
+            const bBuf = device.createBuffer({ size: intermediate_size * 4, usage: GPUBufferUsage.STORAGE });
+            const oBuf = device.createBuffer({ size: intermediate_size * 4, usage: GPUBufferUsage.STORAGE });
+            return {
+              buffers: [aBuf, bBuf, oBuf],
+              entries: [
+                { binding: 0, resource: { buffer: aBuf } },
+                { binding: 1, resource: { buffer: bBuf } },
+                { binding: 2, resource: { buffer: oBuf } }
+              ]
+            };
+          },
+          Math.ceil(intermediate_size / 256)
+        );
+        results.push({ name: 'Mul', time, perLayer: time });
+        log(`   ${time.toFixed(2)}ms`);
+      }
+      
+      // 11. Add (residual)
+      log('11. Add [4096]...', 'info');
+      {
+        const time = await benchmarkOp(
+          'Add',
+          createAddShader(hidden_size),
+          () => {
+            const aBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            const bBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            const oBuf = device.createBuffer({ size: hidden_size * 4, usage: GPUBufferUsage.STORAGE });
+            return {
+              buffers: [aBuf, bBuf, oBuf],
+              entries: [
+                { binding: 0, resource: { buffer: aBuf } },
+                { binding: 1, resource: { buffer: bBuf } },
+                { binding: 2, resource: { buffer: oBuf } }
+              ]
+            };
+          },
+          Math.ceil(hidden_size / 256)
+        );
+        results.push({ name: 'Add', time, perLayer: time * 2 });
+        log(`   ${time.toFixed(2)}ms | x2 per layer = ${(time * 2).toFixed(2)}ms`);
+      }
+      
+      // Summary
+      log('\n\n=== SUMMARY ===\n', 'header');
+      
+      // Calculate per-layer total
+      const matmulTime = results.find(r => r.name === 'Q/K/V/O proj').perLayer +
+                         results.find(r => r.name === 'Gate/Up proj').perLayer +
+                         results.find(r => r.name === 'Down proj').perLayer;
+      const attnTime = results.find(r => r.name === 'Attn Scores').perLayer +
+                       results.find(r => r.name === 'Softmax').perLayer +
+                       results.find(r => r.name === 'Attn Output').perLayer;
+      const otherTime = results.find(r => r.name === 'RMSNorm').perLayer +
+                        results.find(r => r.name === 'RoPE').perLayer +
+                        results.find(r => r.name === 'SiLU').perLayer +
+                        results.find(r => r.name === 'Mul').perLayer +
+                        results.find(r => r.name === 'Add').perLayer;
+      
+      const layerTotal = matmulTime + attnTime + otherTime;
+      const modelTotal = layerTotal * config.num_layers;
+      
+      log('Per-Layer Breakdown:', 'header');
+      log(`  INT4 MatMuls:  ${matmulTime.toFixed(2)}ms (${(matmulTime/layerTotal*100).toFixed(1)}%)`, matmulTime > attnTime + otherTime ? 'hot' : '');
+      log(`  Attention:     ${attnTime.toFixed(2)}ms (${(attnTime/layerTotal*100).toFixed(1)}%)`);
+      log(`  Other ops:     ${otherTime.toFixed(2)}ms (${(otherTime/layerTotal*100).toFixed(1)}%)`);
+      log(`  ─────────────────────`);
+      log(`  Layer total:   ${layerTotal.toFixed(2)}ms`);
+      
+      log('\nFull Model (32 layers):', 'header');
+      log(`  Total time:    ${modelTotal.toFixed(1)}ms`);
+      log(`  Tokens/sec:    ${(1000 / modelTotal).toFixed(2)}`);
+      
+      // Bandwidth analysis
+      const avgBw = results.filter(r => r.bw).reduce((sum, r) => sum + r.bw, 0) / results.filter(r => r.bw).length;
+      log(`\nBandwidth Efficiency:`, 'header');
+      log(`  Average achieved: ${avgBw.toFixed(2)} GB/s`);
+      log(`  Theoretical max:  15 GB/s`);
+      log(`  Efficiency:       ${(avgBw / 15 * 100).toFixed(1)}%`);
+      
+      // Identify hotspots
+      log('\n🔥 HOTSPOTS (where to optimize):', 'hot');
+      const sorted = [...results].sort((a, b) => (b.perLayer || 0) - (a.perLayer || 0));
+      for (let i = 0; i < 5; i++) {
+        const r = sorted[i];
+        if (r.perLayer > 0) {
+          log(`  ${i + 1}. ${r.name}: ${r.perLayer.toFixed(2)}ms/layer (${(r.perLayer / layerTotal * 100).toFixed(1)}%)`);
+        }
+      }
+      
+      log('\n=== PROFILING COMPLETE ===', 'pass');
+    }
+    
+    profile().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

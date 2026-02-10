@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>INT4 LUT Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .header { color: #c084fc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>INT4 Approaches Comparison</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    function quantizeToInt4(weights, K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const packed = new Uint32Array(N * packedK);
+      const scales = new Float32Array(N * numGroups);
+      
+      for (let col = 0; col < N; col++) {
+        for (let g = 0; g < numGroups; g++) {
+          const kStart = g * groupSize;
+          const kEnd = Math.min(kStart + groupSize, K);
+          let maxAbs = 0;
+          for (let k = kStart; k < kEnd; k++) {
+            maxAbs = Math.max(maxAbs, Math.abs(weights[k * N + col]));
+          }
+          scales[col * numGroups + g] = maxAbs > 0 ? maxAbs / 7.0 : 1.0;
+        }
+        
+        for (let packedIdx = 0; packedIdx < packedK; packedIdx++) {
+          let packedVal = 0;
+          for (let sub = 0; sub < 8; sub++) {
+            const k = packedIdx * 8 + sub;
+            if (k >= K) break;
+            const groupIdx = Math.floor(k / groupSize);
+            const scale = scales[col * numGroups + groupIdx];
+            let int4Val = Math.round(weights[k * N + col] / scale) + 8;
+            int4Val = Math.max(0, Math.min(15, int4Val));
+            packedVal |= (int4Val << (sub * 4));
+          }
+          packed[col * packedK + packedIdx] = packedVal;
+        }
+      }
+      return { packed, scales, packedK, numGroups };
+    }
+
+    async function test() {
+      log('=== INT4 Kernel Optimization ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      const M = 1, K = 4096, N = 4096;
+      const GROUP_SIZE = 128;  // Larger groups = fewer scale loads
+      const numGroups = Math.ceil(K / GROUP_SIZE);
+      const packedK = Math.ceil(K / 8);
+      
+      log(`Config: [${M},${K}] x [${K},${N}], group_size=${GROUP_SIZE}\n`);
+      
+      const a = new Float32Array(M * K);
+      const b = new Float32Array(K * N);
+      for (let i = 0; i < a.length; i++) a[i] = Math.random() * 2 - 1;
+      for (let i = 0; i < b.length; i++) b[i] = Math.random() * 2 - 1;
+      
+      const { packed, scales } = quantizeToInt4(b, K, N, GROUP_SIZE);
+
+      // FP32 baseline
+      const fp32Shader = `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  for (var i = 0u; i < K; i++) {
+    sum += a[i] * b[i * N + col];
+  }
+  output[col] = sum;
+}`;
+
+      // V4: Process 32 weights at a time (one full group), unroll everything
+      const v4Shader = `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${GROUP_SIZE}u;
+const PACKED_PER_GROUP = ${GROUP_SIZE / 8}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  
+  // Process one group at a time
+  for (var g = 0u; g < NUM_GROUPS; g++) {
+    let scale = scales[s_offset + g];
+    let k_base = g * GROUP_SIZE;
+    let packed_base = g * PACKED_PER_GROUP;
+    
+    // Process 4 packed u32s per group (32 weights with GROUP_SIZE=128, adjust as needed)
+    for (var p = 0u; p < PACKED_PER_GROUP; p++) {
+      let packed = b_packed[b_offset + packed_base + p];
+      let k = k_base + p * 8u;
+      
+      // Unrolled extraction
+      sum += a[k + 0u] * (f32((packed >>  0u) & 0xFu) - 8.0) * scale;
+      sum += a[k + 1u] * (f32((packed >>  4u) & 0xFu) - 8.0) * scale;
+      sum += a[k + 2u] * (f32((packed >>  8u) & 0xFu) - 8.0) * scale;
+      sum += a[k + 3u] * (f32((packed >> 12u) & 0xFu) - 8.0) * scale;
+      sum += a[k + 4u] * (f32((packed >> 16u) & 0xFu) - 8.0) * scale;
+      sum += a[k + 5u] * (f32((packed >> 20u) & 0xFu) - 8.0) * scale;
+      sum += a[k + 6u] * (f32((packed >> 24u) & 0xFu) - 8.0) * scale;
+      sum += a[k + 7u] * (f32((packed >> 28u) & 0xFu) - 8.0) * scale;
+    }
+  }
+  output[col] = sum;
+}`;
+
+      // V5: Use vec4 for activation loads
+      const v5Shader = `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const K4 = ${K/4}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${GROUP_SIZE}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  
+  // Process 2 packed u32s at a time (8 weights = 2 vec4)
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx += 2u) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[s_offset + group_idx];
+    
+    let p0 = b_packed[b_offset + packed_idx];
+    let p1 = b_packed[b_offset + packed_idx + 1u];
+    
+    // First 8 weights
+    let a0 = a[k_base / 4u];
+    let a1 = a[k_base / 4u + 1u];
+    
+    let w0 = vec4<f32>(
+      f32((p0 >>  0u) & 0xFu) - 8.0,
+      f32((p0 >>  4u) & 0xFu) - 8.0,
+      f32((p0 >>  8u) & 0xFu) - 8.0,
+      f32((p0 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    
+    let w1 = vec4<f32>(
+      f32((p0 >> 16u) & 0xFu) - 8.0,
+      f32((p0 >> 20u) & 0xFu) - 8.0,
+      f32((p0 >> 24u) & 0xFu) - 8.0,
+      f32((p0 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    
+    sum += dot(a0, w0) + dot(a1, w1);
+    
+    // Second 8 weights
+    let a2 = a[k_base / 4u + 2u];
+    let a3 = a[k_base / 4u + 3u];
+    
+    let w2 = vec4<f32>(
+      f32((p1 >>  0u) & 0xFu) - 8.0,
+      f32((p1 >>  4u) & 0xFu) - 8.0,
+      f32((p1 >>  8u) & 0xFu) - 8.0,
+      f32((p1 >> 12u) & 0xFu) - 8.0
+    ) * scale;
+    
+    let w3 = vec4<f32>(
+      f32((p1 >> 16u) & 0xFu) - 8.0,
+      f32((p1 >> 20u) & 0xFu) - 8.0,
+      f32((p1 >> 24u) & 0xFu) - 8.0,
+      f32((p1 >> 28u) & 0xFu) - 8.0
+    ) * scale;
+    
+    sum += dot(a2, w2) + dot(a3, w3);
+  }
+  output[col] = sum;
+}`;
+
+      // V6: Precomputed dequant table (16 entries per scale)
+      // Actually let's try simpler: use integer math
+      const v6Shader = `
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+const K = ${K}u;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_K = ${packedK}u;
+const GROUP_SIZE = ${GROUP_SIZE}u;
+
+// Precomputed: (i - 8) for i in 0..15
+const DEQUANT: array<f32, 16> = array<f32, 16>(
+  -8.0, -7.0, -6.0, -5.0, -4.0, -3.0, -2.0, -1.0,
+   0.0,  1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0
+);
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  
+  var sum = 0.0;
+  let b_offset = col * PACKED_K;
+  let s_offset = col * NUM_GROUPS;
+  
+  for (var packed_idx = 0u; packed_idx < PACKED_K; packed_idx++) {
+    let k_base = packed_idx * 8u;
+    let group_idx = k_base / GROUP_SIZE;
+    let scale = scales[s_offset + group_idx];
+    let packed = b_packed[b_offset + packed_idx];
+    
+    sum += a[k_base + 0u] * DEQUANT[(packed >>  0u) & 0xFu] * scale;
+    sum += a[k_base + 1u] * DEQUANT[(packed >>  4u) & 0xFu] * scale;
+    sum += a[k_base + 2u] * DEQUANT[(packed >>  8u) & 0xFu] * scale;
+    sum += a[k_base + 3u] * DEQUANT[(packed >> 12u) & 0xFu] * scale;
+    sum += a[k_base + 4u] * DEQUANT[(packed >> 16u) & 0xFu] * scale;
+    sum += a[k_base + 5u] * DEQUANT[(packed >> 20u) & 0xFu] * scale;
+    sum += a[k_base + 6u] * DEQUANT[(packed >> 24u) & 0xFu] * scale;
+    sum += a[k_base + 7u] * DEQUANT[(packed >> 28u) & 0xFu] * scale;
+  }
+  output[col] = sum;
+}`;
+
+      // Create buffers
+      const aBuffer = device.createBuffer({ size: M * K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const bBuffer = device.createBuffer({ size: K * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const packedBuffer = device.createBuffer({ size: N * packedK * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const scalesBuffer = device.createBuffer({ size: N * numGroups * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const outBuffer = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      
+      device.queue.writeBuffer(aBuffer, 0, a);
+      device.queue.writeBuffer(bBuffer, 0, b);
+      device.queue.writeBuffer(packedBuffer, 0, packed);
+      device.queue.writeBuffer(scalesBuffer, 0, scales);
+
+      async function benchmark(name, shader, workgroups, entries) {
+        let module;
+        try {
+          module = device.createShaderModule({ code: shader });
+        } catch(e) {
+          log(`${name}: SHADER ERROR - ${e.message}`, 'fail');
+          return null;
+        }
+        
+        const pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' }
+        });
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries
+        });
+        
+        for (let i = 0; i < 10; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        const iterations = 50;
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        return (performance.now() - start) / iterations;
+      }
+
+      const fp32Entries = [
+        { binding: 0, resource: { buffer: aBuffer } },
+        { binding: 1, resource: { buffer: bBuffer } },
+        { binding: 2, resource: { buffer: outBuffer } }
+      ];
+      
+      const int4Entries = [
+        { binding: 0, resource: { buffer: aBuffer } },
+        { binding: 1, resource: { buffer: packedBuffer } },
+        { binding: 2, resource: { buffer: scalesBuffer } },
+        { binding: 3, resource: { buffer: outBuffer } }
+      ];
+
+      log('--- Results ---\n', 'header');
+      
+      const fp32Time = await benchmark('FP32', fp32Shader, Math.ceil(N / 256), fp32Entries);
+      log(`FP32 baseline:       ${fp32Time.toFixed(2)}ms`);
+      
+      const v4Time = await benchmark('V4', v4Shader, Math.ceil(N / 256), int4Entries);
+      if (v4Time) log(`INT4 V4 (group):     ${v4Time.toFixed(2)}ms (${(fp32Time/v4Time).toFixed(2)}x)`);
+      
+      const v5Time = await benchmark('V5', v5Shader, Math.ceil(N / 256), int4Entries);
+      if (v5Time) log(`INT4 V5 (vec4+dot):  ${v5Time.toFixed(2)}ms (${(fp32Time/v5Time).toFixed(2)}x)`);
+      
+      const v6Time = await benchmark('V6', v6Shader, Math.ceil(N / 256), int4Entries);
+      if (v6Time) log(`INT4 V6 (LUT):       ${v6Time.toFixed(2)}ms (${(fp32Time/v6Time).toFixed(2)}x)`);
+      
+      const times = [v4Time, v5Time, v6Time].filter(t => t !== null);
+      if (times.length > 0) {
+        const bestTime = Math.min(...times);
+        log(`\nBest INT4: ${bestTime.toFixed(2)}ms (${(fp32Time/bestTime).toFixed(2)}x vs FP32)`, 
+            bestTime < fp32Time ? 'pass' : 'fail');
+      }
+
+      aBuffer.destroy();
+      bBuffer.destroy();
+      packedBuffer.destroy();
+      scalesBuffer.destroy();
+      outBuffer.destroy();
+    }
+    
+    test().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

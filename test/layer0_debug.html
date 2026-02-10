@@ -1,0 +1,1586 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Qwen2.5-7B WebGPU Inference</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { 
+      font-family: system-ui, -apple-system, sans-serif; 
+      padding: 20px; 
+      background: #0f172a; 
+      color: #e2e8f0;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 { color: #38bdf8; margin-bottom: 5px; }
+    .subtitle { color: #94a3b8; margin-bottom: 20px; }
+    
+    .section {
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .section h2 {
+      color: #7dd3fc;
+      margin-top: 0;
+      font-size: 1.1em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    button {
+      padding: 10px 20px;
+      font-size: 14px;
+      cursor: pointer;
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      transition: background 0.2s;
+    }
+    button:hover:not(:disabled) { background: #2563eb; }
+    button:disabled { background: #475569; cursor: not-allowed; }
+    
+    .file-input-wrapper {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    input[type="file"] { 
+      background: #334155;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 8px;
+      color: #e2e8f0;
+    }
+    
+    .progress-container {
+      margin-top: 15px;
+      display: none;
+    }
+    .progress-bar {
+      height: 8px;
+      background: #334155;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+      width: 0%;
+      transition: width 0.3s;
+    }
+    .progress-text {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-top: 5px;
+    }
+    
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .status.pending { background: #334155; color: #94a3b8; }
+    .status.loading { background: #1e3a5f; color: #60a5fa; }
+    .status.ready { background: #14532d; color: #4ade80; }
+    .status.error { background: #7f1d1d; color: #fca5a5; }
+    
+    .chat-container {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    
+    .chat-messages {
+      min-height: 300px;
+      max-height: 500px;
+      overflow-y: auto;
+      background: #0f172a;
+      border-radius: 8px;
+      padding: 15px;
+    }
+    
+    .message {
+      margin-bottom: 15px;
+      padding: 12px 15px;
+      border-radius: 8px;
+      line-height: 1.5;
+    }
+    .message.user {
+      background: #1e40af;
+      margin-left: 40px;
+    }
+    .message.assistant {
+      background: #334155;
+      margin-right: 40px;
+    }
+    .message-header {
+      font-size: 11px;
+      color: #94a3b8;
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .message-content {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .message-content .cursor {
+      display: inline-block;
+      width: 8px;
+      height: 16px;
+      background: #60a5fa;
+      animation: blink 1s infinite;
+      vertical-align: text-bottom;
+    }
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+    
+    .input-row {
+      display: flex;
+      gap: 10px;
+    }
+    textarea {
+      flex: 1;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #475569;
+      background: #1e293b;
+      color: #e2e8f0;
+      font-family: inherit;
+      font-size: 14px;
+      resize: vertical;
+      min-height: 60px;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #3b82f6;
+    }
+    
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-top: 15px;
+    }
+    .stat {
+      background: #0f172a;
+      padding: 12px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 24px;
+      font-weight: bold;
+      color: #38bdf8;
+    }
+    .stat-label {
+      font-size: 11px;
+      color: #94a3b8;
+      text-transform: uppercase;
+    }
+    
+    .settings {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+    }
+    .setting {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .setting label {
+      font-size: 12px;
+      color: #94a3b8;
+    }
+    .setting input[type="range"] {
+      width: 100%;
+    }
+    .setting-value {
+      font-size: 14px;
+      color: #e2e8f0;
+    }
+    
+    pre.log {
+      background: #0f172a;
+      padding: 15px;
+      border-radius: 8px;
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-family: 'Monaco', 'Menlo', monospace;
+    }
+    .log .info { color: #60a5fa; }
+    .log .success { color: #4ade80; }
+    .log .error { color: #f87171; }
+    .log .warn { color: #fbbf24; }
+  </style>
+</head>
+<body>
+  <h1>🤖 Qwen2.5-7B-Instruct WebGPU</h1>
+  <p class="subtitle">INT4 GPTQ inference running entirely in your browser</p>
+  
+  <!-- Model Loading Section -->
+  <div class="section">
+    <h2>📦 Model Loading</h2>
+    <div class="file-input-wrapper">
+      <input type="file" id="modelFiles" multiple accept=".safetensors" />
+      <input type="file" id="tokenizerFiles" multiple accept=".json,.txt" />
+      <button id="loadBtn" onclick="loadModel()">Load Model</button>
+      <span id="modelStatus" class="status pending">Not loaded</span>
+    </div>
+    <div class="progress-container" id="progressContainer">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-text" id="progressText">Loading...</div>
+    </div>
+    <pre class="log" id="loadLog" style="margin-top: 15px; display: none;"></pre>
+  </div>
+  
+  <!-- Chat Section -->
+  <div class="section">
+    <h2>💬 Chat</h2>
+    <div class="chat-container">
+      <div class="chat-messages" id="chatMessages">
+        <div style="color: #64748b; text-align: center; padding: 40px;">
+          Load the model to start chatting
+        </div>
+      </div>
+      <div class="input-row">
+        <textarea id="userInput" placeholder="Type your message..." disabled></textarea>
+        <button id="sendBtn" onclick="sendMessage()" disabled>Send</button>
+        <button id="stopBtn" onclick="stopGeneration()" disabled style="background: #dc2626;">Stop</button>
+      </div>
+    </div>
+    
+    <div class="stats" id="stats" style="display: none;">
+      <div class="stat">
+        <div class="stat-value" id="statTokens">0</div>
+        <div class="stat-label">Tokens Generated</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="statSpeed">0</div>
+        <div class="stat-label">Tokens/sec</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="statTime">0</div>
+        <div class="stat-label">Time (ms/token)</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="statTotal">0</div>
+        <div class="stat-label">Total Time (s)</div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Settings Section -->
+  <div class="section">
+    <h2>⚙️ Generation Settings</h2>
+    <div class="settings">
+      <div class="setting">
+        <label>Temperature: <span class="setting-value" id="tempValue">0.7</span></label>
+        <input type="range" id="temperature" min="0.1" max="2" step="0.1" value="0.7" 
+               oninput="updateSetting('temp', this.value)">
+      </div>
+      <div class="setting">
+        <label>Top-K: <span class="setting-value" id="topkValue">50</span></label>
+        <input type="range" id="topK" min="1" max="100" step="1" value="50"
+               oninput="updateSetting('topk', this.value)">
+      </div>
+      <div class="setting">
+        <label>Top-P: <span class="setting-value" id="toppValue">0.9</span></label>
+        <input type="range" id="topP" min="0.1" max="1" step="0.05" value="0.9"
+               oninput="updateSetting('topp', this.value)">
+      </div>
+      <div class="setting">
+        <label>Max Tokens: <span class="setting-value" id="maxValue">256</span></label>
+        <input type="range" id="maxTokens" min="16" max="1024" step="16" value="256"
+               oninput="updateSetting('max', this.value)">
+      </div>
+      <div class="setting">
+        <label>Repetition Penalty: <span class="setting-value" id="repValue">1.1</span></label>
+        <input type="range" id="repPenalty" min="1" max="2" step="0.05" value="1.1"
+               oninput="updateSetting('rep', this.value)">
+      </div>
+    </div>
+  </div>
+  
+  <!-- Debug Log -->
+  <div class="section">
+    <h2>📋 Debug Log</h2>
+    <pre class="log" id="debugLog"></pre>
+  </div>
+
+  <!-- Load all component scripts -->
+  <script src="weight-loader-v3.js"></script>
+  <script src="qwen2-tokenizer.js"></script>
+  <script src="embedding-lookup.js"></script>
+  <script src="kv-cache.js"></script>
+  <script src="silu-mlp.js"></script>
+  <script src="lm-head.js"></script>
+  <script src="gpu-sampling.js"></script>
+  
+  <script>
+    // ============================================
+    // Global State
+    // ============================================
+    let device = null;
+    let modelBuffers = null;
+    let tokenizer = null;
+    let embeddingLookup = null;
+    let kvCache = null;
+    let sampler = null;
+    let lmHead = null;
+    
+    let isGenerating = false;
+    let shouldStop = false;
+    
+    const CONFIG = {
+      vocab_size: 152064,
+      hidden_size: 3584,
+      intermediate_size: 18944,
+      num_hidden_layers: 28,
+      num_attention_heads: 28,
+      num_key_value_heads: 4,
+      head_dim: 128,
+      rms_norm_eps: 1e-6,
+      rope_theta: 1000000.0,
+      group_size: 128,  // GPTQ group size
+    };
+    
+    // Chat template tokens
+    const IM_START = 151644;
+    const IM_END = 151645;
+    const NEWLINE = 198;  // '\n' token
+    
+    // ============================================
+    // Logging
+    // ============================================
+    function log(msg, type = '') {
+      const debugLog = document.getElementById('debugLog');
+      const time = new Date().toLocaleTimeString();
+      const cls = type ? `class="${type}"` : '';
+      debugLog.innerHTML += `<span ${cls}>[${time}] ${msg}</span>\n`;
+      debugLog.scrollTop = debugLog.scrollHeight;
+      console.log(msg);
+    }
+    
+    function loadLog(msg) {
+      const loadLogEl = document.getElementById('loadLog');
+      loadLogEl.innerHTML += msg + '\n';
+      loadLogEl.scrollTop = loadLogEl.scrollHeight;
+    }
+    
+    function setStatus(status, text) {
+      const el = document.getElementById('modelStatus');
+      el.className = `status ${status}`;
+      el.textContent = text;
+    }
+    
+    function setProgress(percent, text) {
+      document.getElementById('progressFill').style.width = `${percent}%`;
+      document.getElementById('progressText').textContent = text;
+    }
+    
+    function updateSetting(type, value) {
+      const displays = {
+        temp: 'tempValue',
+        topk: 'topkValue', 
+        topp: 'toppValue',
+        max: 'maxValue',
+        rep: 'repValue'
+      };
+      document.getElementById(displays[type]).textContent = value;
+    }
+    
+    // ============================================
+    // WebGPU Initialization
+    // ============================================
+    async function initWebGPU() {
+      if (!navigator.gpu) {
+        throw new Error('WebGPU not supported in this browser');
+      }
+      
+      const adapter = await navigator.gpu.requestAdapter({
+        powerPreference: 'high-performance'
+      });
+      
+      if (!adapter) {
+        throw new Error('No WebGPU adapter found');
+      }
+      
+      device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize,
+        }
+      });
+      
+      log(`WebGPU initialized: ${adapter.info?.device || 'GPU'}`, 'success');
+      return device;
+    }
+    
+    // ============================================
+    // Model Loading
+    // ============================================
+    async function loadModel() {
+      const modelInput = document.getElementById('modelFiles');
+      const tokenizerInput = document.getElementById('tokenizerFiles');
+      
+      if (!modelInput.files.length) {
+        alert('Please select model .safetensors files');
+        return;
+      }
+      
+      if (!tokenizerInput.files.length) {
+        alert('Please select tokenizer files (vocab.json, merges.txt)');
+        return;
+      }
+      
+      document.getElementById('loadBtn').disabled = true;
+      document.getElementById('progressContainer').style.display = 'block';
+      document.getElementById('loadLog').style.display = 'block';
+      setStatus('loading', 'Loading...');
+      
+      try {
+        // 1. Initialize WebGPU
+        setProgress(5, 'Initializing WebGPU...');
+        await initWebGPU();
+        
+        // 2. Load tokenizer
+        setProgress(10, 'Loading tokenizer...');
+        tokenizer = new Qwen2Tokenizer();
+        
+        const tokenizerFiles = {};
+        for (const file of tokenizerInput.files) {
+          if (file.name === 'vocab.json') {
+            tokenizerFiles.vocab = await file.text();
+          } else if (file.name === 'merges.txt') {
+            tokenizerFiles.merges = await file.text();
+          }
+        }
+        
+        if (!tokenizerFiles.vocab || !tokenizerFiles.merges) {
+          throw new Error('Missing vocab.json or merges.txt');
+        }
+        
+        await tokenizer.loadFromFiles(tokenizerFiles.vocab, tokenizerFiles.merges);
+        loadLog(`✅ Tokenizer loaded: ${Object.keys(tokenizer.vocab).length} tokens`);
+        
+        // 3. Load model weights
+        setProgress(15, 'Parsing model files...');
+        const loader = new Qwen2WeightLoader(CONFIG);
+        loader.setProgressCallback((msg) => {
+          loadLog(msg);
+        });
+        
+        await loader.loadFiles(Array.from(modelInput.files));
+        await loader.analyzeModel();
+        
+        setProgress(20, 'Loading weights to GPU...');
+        const startLoad = performance.now();
+        modelBuffers = await loader.loadToGPU(device);
+        const loadTime = ((performance.now() - startLoad) / 1000).toFixed(1);
+        loadLog(`✅ Weights loaded in ${loadTime}s`);
+        
+        // 4. Initialize components
+        setProgress(90, 'Initializing inference components...');
+        
+        // Embedding lookup
+        embeddingLookup = new EmbeddingLookup(device, CONFIG.vocab_size, CONFIG.hidden_size);
+        embeddingLookup.setEmbeddingBuffer(modelBuffers.embed_tokens);
+        await embeddingLookup.init();
+        loadLog('✅ Embedding lookup initialized');
+        
+        // KV Cache
+        kvCache = new KVCache(device, {
+          numLayers: CONFIG.num_hidden_layers,
+          numKVHeads: CONFIG.num_key_value_heads,
+          headDim: CONFIG.head_dim,
+          maxSeqLen: 2048
+        });
+        loadLog('✅ KV Cache initialized');
+        
+        // GPU Sampler
+        sampler = new GPUSampler(device, CONFIG.vocab_size, {
+          temperature: 0.7,
+          topK: 50,
+          topP: 0.9,
+          repetitionPenalty: 1.1,
+          seed: Date.now()
+        });
+        await sampler.init();
+        loadLog('✅ GPU Sampler initialized');
+        
+        // LM Head
+        lmHead = new LMHead(device, CONFIG.vocab_size, CONFIG.hidden_size);
+        lmHead.setWeightBuffer(modelBuffers.lm_head);
+        await lmHead.init();
+        loadLog('✅ LM Head initialized');
+        
+        // 5. Initialize compute pipelines for transformer layers
+        setProgress(95, 'Creating compute pipelines...');
+        await initComputePipelines();
+        loadLog('✅ Compute pipelines created');
+        
+        // Debug: Check buffer structure
+        loadLog('\n--- Debug: Model Buffer Structure ---');
+        loadLog(`Layers: ${modelBuffers.layers.length}`);
+        if (modelBuffers.layers.length > 0) {
+          const layer0 = modelBuffers.layers[0];
+          loadLog(`Layer 0 keys: ${Object.keys(layer0).join(', ')}`);
+          for (const key of Object.keys(layer0)) {
+            const item = layer0[key];
+            if (item && item.packed) {
+              loadLog(`  ${key}: packed=${item.packed.size}, scales=${item.scales.size}`);
+            } else if (item && item.size !== undefined) {
+              loadLog(`  ${key}: size=${item.size}`);
+            } else {
+              loadLog(`  ${key}: ${JSON.stringify(item)}`);
+            }
+          }
+        }
+        loadLog('--- End Debug ---\n');
+        
+        setProgress(100, 'Ready!');
+        setStatus('ready', 'Model loaded');
+        
+        // Enable chat
+        document.getElementById('userInput').disabled = false;
+        document.getElementById('sendBtn').disabled = false;
+        document.getElementById('chatMessages').innerHTML = '';
+        document.getElementById('stats').style.display = 'grid';
+        
+        log('Model ready for inference!', 'success');
+        
+      } catch (err) {
+        setStatus('error', 'Load failed');
+        log(`Error: ${err.message}`, 'error');
+        console.error(err);
+        document.getElementById('loadBtn').disabled = false;
+      }
+    }
+    
+    // ============================================
+    // Compute Pipeline Initialization
+    // ============================================
+    
+    // Store pipelines globally
+    let pipelines = {};
+    let workBuffers = {};
+    
+    async function initComputePipelines() {
+      // Create working buffers
+      const H = CONFIG.hidden_size;
+      const I = CONFIG.intermediate_size;
+      
+      // Hidden state buffer (single token)
+      workBuffers.hidden = device.createBuffer({
+        size: H * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'hidden_state'
+      });
+      
+      // Residual buffer
+      workBuffers.residual = device.createBuffer({
+        size: H * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'residual'
+      });
+      
+      // Post-norm buffer
+      workBuffers.normed = device.createBuffer({
+        size: H * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'normed'
+      });
+      
+      // QKV buffers
+      workBuffers.q = device.createBuffer({
+        size: CONFIG.num_attention_heads * CONFIG.head_dim * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'q_proj'
+      });
+      
+      workBuffers.k = device.createBuffer({
+        size: CONFIG.num_key_value_heads * CONFIG.head_dim * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'k_proj'
+      });
+      
+      workBuffers.v = device.createBuffer({
+        size: CONFIG.num_key_value_heads * CONFIG.head_dim * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'v_proj'
+      });
+      
+      // Attention output
+      workBuffers.attnOut = device.createBuffer({
+        size: H * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'attn_output'
+      });
+      
+      // MLP intermediate buffers
+      workBuffers.gate = device.createBuffer({
+        size: I * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'gate_proj'
+      });
+      
+      workBuffers.up = device.createBuffer({
+        size: I * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'up_proj'
+      });
+      
+      workBuffers.mlpOut = device.createBuffer({
+        size: H * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'mlp_output'
+      });
+      
+      // Logits buffer
+      workBuffers.logits = device.createBuffer({
+        size: CONFIG.vocab_size * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        label: 'logits'
+      });
+      
+      // Position buffer (for RoPE)
+      workBuffers.position = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        label: 'position'
+      });
+      
+      // Create RMSNorm pipeline
+      pipelines.rmsNorm = await createRMSNormPipeline();
+      
+      // Create INT4 MatMul pipeline
+      pipelines.int4Matmul = await createINT4MatmulPipeline();
+      
+      // Create RoPE pipeline  
+      pipelines.rope = await createRoPEPipeline();
+      
+      // Create Attention pipeline
+      pipelines.attention = await createAttentionPipeline();
+      
+      // Create SiLU-Mul pipeline
+      pipelines.siluMul = await createSiLUMulPipeline();
+      
+      // Create Add (residual) pipeline
+      pipelines.add = await createAddPipeline();
+      
+      log('All compute pipelines created', 'info');
+    }
+    
+    // RMSNorm kernel - from rmsnorm-test.html
+    function genRMSNormShader(normSize, epsilon = 1e-6) {
+      const wgSize = 256;
+      
+      return `
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>;
+
+const NORM = ${normSize}u;
+const EPSILON = ${epsilon};
+const WG_SIZE = ${wgSize}u;
+
+var<workgroup> wg_scratch: array<f32, ${wgSize}>;
+
+@compute @workgroup_size(${wgSize})
+fn main(
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(workgroup_id) wgid: vec3<u32>
+) {
+  let tid = lid.x;
+  
+  // Phase 1: Each thread accumulates sum of squares for its elements
+  var localSumSq = 0.0;
+  for (var i = tid; i < NORM; i = i + WG_SIZE) {
+    let x = input[i];
+    localSumSq = localSumSq + x * x;
+  }
+  wg_scratch[tid] = localSumSq;
+  workgroupBarrier();
+  
+  // Phase 2: Parallel reduction in shared memory
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (tid < stride) {
+      wg_scratch[tid] = wg_scratch[tid] + wg_scratch[tid + stride];
+    }
+    workgroupBarrier();
+  }
+  
+  // Phase 3: Compute scale (all threads read the final result)
+  let sumSq = wg_scratch[0];
+  let rms = sqrt(sumSq / f32(NORM) + EPSILON);
+  let scale = 1.0 / rms;
+  
+  // Phase 4: Each thread normalizes its elements
+  for (var i = tid; i < NORM; i = i + WG_SIZE) {
+    output[i] = input[i] * scale * weight[i];
+  }
+}`;
+    }
+    
+    async function createRMSNormPipeline() {
+      const code = genRMSNormShader(CONFIG.hidden_size, CONFIG.rms_norm_eps);
+      const module = device.createShaderModule({ code });
+      return device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' }
+      });
+    }
+    
+    // INT4 MatMul kernel - V29 optimized (103% bandwidth efficiency)
+    // From int4-variance-test.html - vec4 loads, unrolled dot products, wg=48
+    function genINT4MatmulShader(K, N, groupSize = 128) {
+      const numGroups = Math.ceil(K / groupSize);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_PER_GROUP = 16u;
+@compute @workgroup_size(48)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  for (var g = 0u; g < NUM_GROUPS; g++) {
+    let s = scales[g * N + col];
+    let base = g * PACKED_PER_GROUP;
+    var acc = 0.0;
+    let p0 = b_packed[base * N + col];
+    let p1 = b_packed[(base + 1u) * N + col];
+    let p2 = b_packed[(base + 2u) * N + col];
+    let p3 = b_packed[(base + 3u) * N + col];
+    let p4 = b_packed[(base + 4u) * N + col];
+    let p5 = b_packed[(base + 5u) * N + col];
+    let p6 = b_packed[(base + 6u) * N + col];
+    let p7 = b_packed[(base + 7u) * N + col];
+    let k0 = base * 8u;
+    let a0 = a[k0/4u]; let a1 = a[k0/4u+1u]; let a2 = a[k0/4u+2u]; let a3 = a[k0/4u+3u];
+    let a4 = a[k0/4u+4u]; let a5 = a[k0/4u+5u]; let a6 = a[k0/4u+6u]; let a7 = a[k0/4u+7u];
+    let a8 = a[k0/4u+8u]; let a9 = a[k0/4u+9u]; let a10 = a[k0/4u+10u]; let a11 = a[k0/4u+11u];
+    let a12 = a[k0/4u+12u]; let a13 = a[k0/4u+13u]; let a14 = a[k0/4u+14u]; let a15 = a[k0/4u+15u];
+    acc += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0));
+    acc += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0));
+    acc += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0));
+    acc += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0));
+    acc += dot(a4, vec4<f32>(f32((p2>>0u)&0xFu)-8.0, f32((p2>>4u)&0xFu)-8.0, f32((p2>>8u)&0xFu)-8.0, f32((p2>>12u)&0xFu)-8.0));
+    acc += dot(a5, vec4<f32>(f32((p2>>16u)&0xFu)-8.0, f32((p2>>20u)&0xFu)-8.0, f32((p2>>24u)&0xFu)-8.0, f32((p2>>28u)&0xFu)-8.0));
+    acc += dot(a6, vec4<f32>(f32((p3>>0u)&0xFu)-8.0, f32((p3>>4u)&0xFu)-8.0, f32((p3>>8u)&0xFu)-8.0, f32((p3>>12u)&0xFu)-8.0));
+    acc += dot(a7, vec4<f32>(f32((p3>>16u)&0xFu)-8.0, f32((p3>>20u)&0xFu)-8.0, f32((p3>>24u)&0xFu)-8.0, f32((p3>>28u)&0xFu)-8.0));
+    acc += dot(a8, vec4<f32>(f32((p4>>0u)&0xFu)-8.0, f32((p4>>4u)&0xFu)-8.0, f32((p4>>8u)&0xFu)-8.0, f32((p4>>12u)&0xFu)-8.0));
+    acc += dot(a9, vec4<f32>(f32((p4>>16u)&0xFu)-8.0, f32((p4>>20u)&0xFu)-8.0, f32((p4>>24u)&0xFu)-8.0, f32((p4>>28u)&0xFu)-8.0));
+    acc += dot(a10, vec4<f32>(f32((p5>>0u)&0xFu)-8.0, f32((p5>>4u)&0xFu)-8.0, f32((p5>>8u)&0xFu)-8.0, f32((p5>>12u)&0xFu)-8.0));
+    acc += dot(a11, vec4<f32>(f32((p5>>16u)&0xFu)-8.0, f32((p5>>20u)&0xFu)-8.0, f32((p5>>24u)&0xFu)-8.0, f32((p5>>28u)&0xFu)-8.0));
+    acc += dot(a12, vec4<f32>(f32((p6>>0u)&0xFu)-8.0, f32((p6>>4u)&0xFu)-8.0, f32((p6>>8u)&0xFu)-8.0, f32((p6>>12u)&0xFu)-8.0));
+    acc += dot(a13, vec4<f32>(f32((p6>>16u)&0xFu)-8.0, f32((p6>>20u)&0xFu)-8.0, f32((p6>>24u)&0xFu)-8.0, f32((p6>>28u)&0xFu)-8.0));
+    acc += dot(a14, vec4<f32>(f32((p7>>0u)&0xFu)-8.0, f32((p7>>4u)&0xFu)-8.0, f32((p7>>8u)&0xFu)-8.0, f32((p7>>12u)&0xFu)-8.0));
+    acc += dot(a15, vec4<f32>(f32((p7>>16u)&0xFu)-8.0, f32((p7>>20u)&0xFu)-8.0, f32((p7>>24u)&0xFu)-8.0, f32((p7>>28u)&0xFu)-8.0));
+    let q0 = b_packed[(base + 8u) * N + col];
+    let q1 = b_packed[(base + 9u) * N + col];
+    let q2 = b_packed[(base + 10u) * N + col];
+    let q3 = b_packed[(base + 11u) * N + col];
+    let q4 = b_packed[(base + 12u) * N + col];
+    let q5 = b_packed[(base + 13u) * N + col];
+    let q6 = b_packed[(base + 14u) * N + col];
+    let q7 = b_packed[(base + 15u) * N + col];
+    let k1 = (base + 8u) * 8u;
+    let b0 = a[k1/4u]; let b1 = a[k1/4u+1u]; let b2 = a[k1/4u+2u]; let b3 = a[k1/4u+3u];
+    let b4 = a[k1/4u+4u]; let b5 = a[k1/4u+5u]; let b6 = a[k1/4u+6u]; let b7 = a[k1/4u+7u];
+    let b8 = a[k1/4u+8u]; let b9 = a[k1/4u+9u]; let b10 = a[k1/4u+10u]; let b11 = a[k1/4u+11u];
+    let b12 = a[k1/4u+12u]; let b13 = a[k1/4u+13u]; let b14 = a[k1/4u+14u]; let b15 = a[k1/4u+15u];
+    acc += dot(b0, vec4<f32>(f32((q0>>0u)&0xFu)-8.0, f32((q0>>4u)&0xFu)-8.0, f32((q0>>8u)&0xFu)-8.0, f32((q0>>12u)&0xFu)-8.0));
+    acc += dot(b1, vec4<f32>(f32((q0>>16u)&0xFu)-8.0, f32((q0>>20u)&0xFu)-8.0, f32((q0>>24u)&0xFu)-8.0, f32((q0>>28u)&0xFu)-8.0));
+    acc += dot(b2, vec4<f32>(f32((q1>>0u)&0xFu)-8.0, f32((q1>>4u)&0xFu)-8.0, f32((q1>>8u)&0xFu)-8.0, f32((q1>>12u)&0xFu)-8.0));
+    acc += dot(b3, vec4<f32>(f32((q1>>16u)&0xFu)-8.0, f32((q1>>20u)&0xFu)-8.0, f32((q1>>24u)&0xFu)-8.0, f32((q1>>28u)&0xFu)-8.0));
+    acc += dot(b4, vec4<f32>(f32((q2>>0u)&0xFu)-8.0, f32((q2>>4u)&0xFu)-8.0, f32((q2>>8u)&0xFu)-8.0, f32((q2>>12u)&0xFu)-8.0));
+    acc += dot(b5, vec4<f32>(f32((q2>>16u)&0xFu)-8.0, f32((q2>>20u)&0xFu)-8.0, f32((q2>>24u)&0xFu)-8.0, f32((q2>>28u)&0xFu)-8.0));
+    acc += dot(b6, vec4<f32>(f32((q3>>0u)&0xFu)-8.0, f32((q3>>4u)&0xFu)-8.0, f32((q3>>8u)&0xFu)-8.0, f32((q3>>12u)&0xFu)-8.0));
+    acc += dot(b7, vec4<f32>(f32((q3>>16u)&0xFu)-8.0, f32((q3>>20u)&0xFu)-8.0, f32((q3>>24u)&0xFu)-8.0, f32((q3>>28u)&0xFu)-8.0));
+    acc += dot(b8, vec4<f32>(f32((q4>>0u)&0xFu)-8.0, f32((q4>>4u)&0xFu)-8.0, f32((q4>>8u)&0xFu)-8.0, f32((q4>>12u)&0xFu)-8.0));
+    acc += dot(b9, vec4<f32>(f32((q4>>16u)&0xFu)-8.0, f32((q4>>20u)&0xFu)-8.0, f32((q4>>24u)&0xFu)-8.0, f32((q4>>28u)&0xFu)-8.0));
+    acc += dot(b10, vec4<f32>(f32((q5>>0u)&0xFu)-8.0, f32((q5>>4u)&0xFu)-8.0, f32((q5>>8u)&0xFu)-8.0, f32((q5>>12u)&0xFu)-8.0));
+    acc += dot(b11, vec4<f32>(f32((q5>>16u)&0xFu)-8.0, f32((q5>>20u)&0xFu)-8.0, f32((q5>>24u)&0xFu)-8.0, f32((q5>>28u)&0xFu)-8.0));
+    acc += dot(b12, vec4<f32>(f32((q6>>0u)&0xFu)-8.0, f32((q6>>4u)&0xFu)-8.0, f32((q6>>8u)&0xFu)-8.0, f32((q6>>12u)&0xFu)-8.0));
+    acc += dot(b13, vec4<f32>(f32((q6>>16u)&0xFu)-8.0, f32((q6>>20u)&0xFu)-8.0, f32((q6>>24u)&0xFu)-8.0, f32((q6>>28u)&0xFu)-8.0));
+    acc += dot(b14, vec4<f32>(f32((q7>>0u)&0xFu)-8.0, f32((q7>>4u)&0xFu)-8.0, f32((q7>>8u)&0xFu)-8.0, f32((q7>>12u)&0xFu)-8.0));
+    acc += dot(b15, vec4<f32>(f32((q7>>16u)&0xFu)-8.0, f32((q7>>20u)&0xFu)-8.0, f32((q7>>24u)&0xFu)-8.0, f32((q7>>28u)&0xFu)-8.0));
+    sum += acc * s;
+  }
+  output[col] = sum;
+}`;
+    }
+    
+    async function createINT4MatmulPipeline() {
+      // We'll create pipelines dynamically based on the layer
+      return null;
+    }
+    
+    // RoPE kernel - from rope_test.html
+    // Pairs are consecutive: (0,1), (2,3), (4,5), etc.
+    function genRoPEShader(numQHeads, numKVHeads, headDim, ropeTheta = 1000000.0) {
+      const halfDim = headDim / 2;
+      const wgSize = 256;
+      
+      return `
+@group(0) @binding(0) var<storage, read_write> q: array<f32>;
+@group(0) @binding(1) var<storage, read_write> k: array<f32>;
+@group(0) @binding(2) var<storage, read> position: array<u32>;
+
+const NUM_Q_HEADS = ${numQHeads}u;
+const NUM_KV_HEADS = ${numKVHeads}u;
+const HEAD_DIM = ${headDim}u;
+const HALF_DIM = ${halfDim}u;
+const ROPE_THETA = ${ropeTheta};
+
+@compute @workgroup_size(${wgSize})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  let pos = f32(position[0]);
+  
+  // Process Q heads
+  if (idx < NUM_Q_HEADS * HALF_DIM) {
+    let head = idx / HALF_DIM;
+    let pair = idx % HALF_DIM;
+    
+    let freq = 1.0 / pow(ROPE_THETA, f32(2u * pair) / f32(HEAD_DIM));
+    let angle = pos * freq;
+    let cos_val = cos(angle);
+    let sin_val = sin(angle);
+    
+    let base_idx = head * HEAD_DIM + pair * 2u;
+    let q0 = q[base_idx];
+    let q1 = q[base_idx + 1u];
+    
+    q[base_idx] = q0 * cos_val - q1 * sin_val;
+    q[base_idx + 1u] = q0 * sin_val + q1 * cos_val;
+  }
+  
+  // Process K heads
+  if (idx < NUM_KV_HEADS * HALF_DIM) {
+    let head = idx / HALF_DIM;
+    let pair = idx % HALF_DIM;
+    
+    let freq = 1.0 / pow(ROPE_THETA, f32(2u * pair) / f32(HEAD_DIM));
+    let angle = pos * freq;
+    let cos_val = cos(angle);
+    let sin_val = sin(angle);
+    
+    let base_idx = head * HEAD_DIM + pair * 2u;
+    let k0 = k[base_idx];
+    let k1 = k[base_idx + 1u];
+    
+    k[base_idx] = k0 * cos_val - k1 * sin_val;
+    k[base_idx + 1u] = k0 * sin_val + k1 * cos_val;
+  }
+}`;
+    }
+    
+    async function createRoPEPipeline() {
+      const code = genRoPEShader(CONFIG.num_attention_heads, CONFIG.head_dim, CONFIG.rope_theta);
+      const module = device.createShaderModule({ code });
+      return device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' }
+      });
+    }
+    
+    // GQA Attention kernel - from gqa_test.html
+    // One workgroup per Q head, uses shared memory for efficiency
+    function genAttentionShader(maxSeqLen = 2048) {
+      const numQHeads = CONFIG.num_attention_heads;
+      const numKVHeads = CONFIG.num_key_value_heads;
+      const headDim = CONFIG.head_dim;
+      const headsPerGroup = numQHeads / numKVHeads;
+      const scale = 1.0 / Math.sqrt(headDim);
+      const wgSize = 256;
+      
+      return `
+@group(0) @binding(0) var<storage, read> q: array<f32>;
+@group(0) @binding(1) var<storage, read> k_cache: array<f32>;
+@group(0) @binding(2) var<storage, read> v_cache: array<f32>;
+@group(0) @binding(3) var<storage, read> seq_len: array<u32>;
+@group(0) @binding(4) var<storage, read_write> output: array<f32>;
+
+const NUM_Q_HEADS = ${numQHeads}u;
+const NUM_KV_HEADS = ${numKVHeads}u;
+const HEADS_PER_GROUP = ${headsPerGroup}u;
+const HEAD_DIM = ${headDim}u;
+const MAX_SEQ_LEN = ${maxSeqLen}u;
+const SCALE = ${scale};
+const WG_SIZE = ${wgSize}u;
+
+var<workgroup> wg_q: array<f32, ${headDim}>;
+var<workgroup> wg_scores: array<f32, ${maxSeqLen}>;
+var<workgroup> wg_reduce: array<f32, ${wgSize}>;
+
+@compute @workgroup_size(${wgSize})
+fn main(
+  @builtin(workgroup_id) wgid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>
+) {
+  let q_head = wgid.x;
+  let tid = lid.x;
+  let kv_head = q_head / HEADS_PER_GROUP;
+  let cur_seq_len = seq_len[0];
+  
+  // Load Q into shared memory
+  let q_base = q_head * HEAD_DIM;
+  for (var d = tid; d < HEAD_DIM; d = d + WG_SIZE) {
+    wg_q[d] = q[q_base + d];
+  }
+  workgroupBarrier();
+  
+  // Phase 1: Compute scores
+  for (var pos = tid; pos < cur_seq_len; pos = pos + WG_SIZE) {
+    var score = 0.0;
+    let k_base = pos * NUM_KV_HEADS * HEAD_DIM + kv_head * HEAD_DIM;
+    
+    for (var d = 0u; d < HEAD_DIM; d = d + 1u) {
+      score = score + wg_q[d] * k_cache[k_base + d];
+    }
+    wg_scores[pos] = score * SCALE;
+  }
+  workgroupBarrier();
+  
+  // Phase 2: Find max
+  var local_max = -1e30;
+  for (var pos = tid; pos < cur_seq_len; pos = pos + WG_SIZE) {
+    local_max = max(local_max, wg_scores[pos]);
+  }
+  wg_reduce[tid] = local_max;
+  workgroupBarrier();
+  
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (tid < stride) {
+      wg_reduce[tid] = max(wg_reduce[tid], wg_reduce[tid + stride]);
+    }
+    workgroupBarrier();
+  }
+  let max_val = wg_reduce[0];
+  
+  // Phase 3: Exp and sum
+  var local_sum = 0.0;
+  for (var pos = tid; pos < cur_seq_len; pos = pos + WG_SIZE) {
+    let e = exp(wg_scores[pos] - max_val);
+    wg_scores[pos] = e;
+    local_sum = local_sum + e;
+  }
+  wg_reduce[tid] = local_sum;
+  workgroupBarrier();
+  
+  for (var stride = WG_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (tid < stride) {
+      wg_reduce[tid] = wg_reduce[tid] + wg_reduce[tid + stride];
+    }
+    workgroupBarrier();
+  }
+  let sum_val = wg_reduce[0];
+  
+  // Phase 4: Normalize
+  for (var pos = tid; pos < cur_seq_len; pos = pos + WG_SIZE) {
+    wg_scores[pos] = wg_scores[pos] / sum_val;
+  }
+  workgroupBarrier();
+  
+  // Phase 5: Output = probs @ V
+  for (var d = tid; d < HEAD_DIM; d = d + WG_SIZE) {
+    var out_val = 0.0;
+    for (var pos = 0u; pos < cur_seq_len; pos = pos + 1u) {
+      let v_idx = pos * NUM_KV_HEADS * HEAD_DIM + kv_head * HEAD_DIM + d;
+      out_val = out_val + wg_scores[pos] * v_cache[v_idx];
+    }
+    output[q_head * HEAD_DIM + d] = out_val;
+  }
+}`;
+    }
+    
+    async function createAttentionPipeline() {
+      const code = genAttentionShader();
+      const module = device.createShaderModule({ code });
+      return device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' }
+      });
+    }
+    
+    // SiLU-Mul: gate = silu(gate) * up
+    function genSiLUMulShader(size) {
+      return `
+@group(0) @binding(0) var<storage, read_write> gate: array<f32>;
+@group(0) @binding(1) var<storage, read> up: array<f32>;
+
+const SIZE = ${size}u;
+
+fn silu(x: f32) -> f32 {
+  return x / (1.0f + exp(-x));
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= SIZE) { return; }
+  
+  gate[idx] = silu(gate[idx]) * up[idx];
+}`;
+    }
+    
+    async function createSiLUMulPipeline() {
+      const code = genSiLUMulShader(CONFIG.intermediate_size);
+      const module = device.createShaderModule({ code });
+      return device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' }
+      });
+    }
+    
+    // Vector addition (residual)
+    function genAddShader(size) {
+      return `
+@group(0) @binding(0) var<storage, read_write> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+
+const SIZE = ${size}u;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= SIZE) { return; }
+  a[idx] = a[idx] + b[idx];
+}`;
+    }
+    
+    async function createAddPipeline() {
+      const code = genAddShader(CONFIG.hidden_size);
+      const module = device.createShaderModule({ code });
+      return device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' }
+      });
+    }
+    
+    // ============================================
+    // INT4 MatMul Helper
+    // ============================================
+    async function runINT4Matmul(input, weights, scales, output, inFeatures, outFeatures) {
+      const code = genINT4MatmulShader(inFeatures, outFeatures);
+      const module = device.createShaderModule({ code });
+      const pipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' }
+      });
+      
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: input } },
+          { binding: 1, resource: { buffer: weights } },
+          { binding: 2, resource: { buffer: scales } },
+          { binding: 3, resource: { buffer: output } }
+        ]
+      });
+      
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(Math.ceil(outFeatures / 48));  // V29 uses wgSize=48
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+    }
+    
+    // ============================================
+    // Single Token Forward Pass
+    // ============================================
+    async function forwardToken(tokenId, position) {
+      const H = CONFIG.hidden_size;
+      const I = CONFIG.intermediate_size;
+      
+      // 1. Embedding lookup
+      // Create temp output buffer for embedding
+      const embedBuffer = device.createBuffer({
+        size: H * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        label: 'embed_temp'
+      });
+      embeddingLookup.lookupSingle(tokenId, embedBuffer);
+      
+      // Copy to hidden state
+      let encoder = device.createCommandEncoder();
+      encoder.copyBufferToBuffer(embedBuffer, 0, workBuffers.hidden, 0, H * 4);
+      device.queue.submit([encoder.finish()]);
+      
+      // Cleanup temp buffer
+      embedBuffer.destroy();
+      
+      // Update position for RoPE
+      device.queue.writeBuffer(workBuffers.position, 0, new Uint32Array([position]));
+      
+      // 2. Process each transformer layer
+      for (let layer = 0; layer < CONFIG.num_hidden_layers; layer++) {
+        const layerBufs = modelBuffers.layers[layer];
+        
+        // Save residual
+        encoder = device.createCommandEncoder();
+        encoder.copyBufferToBuffer(workBuffers.hidden, 0, workBuffers.residual, 0, H * 4);
+        device.queue.submit([encoder.finish()]);
+        
+        // 2a. Input LayerNorm
+        let bg = device.createBindGroup({
+          layout: pipelines.rmsNorm.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: workBuffers.hidden } },
+            { binding: 1, resource: { buffer: layerBufs.input_layernorm } },
+            { binding: 2, resource: { buffer: workBuffers.normed } }
+          ]
+        });
+        
+        encoder = device.createCommandEncoder();
+        let pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.rmsNorm);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(1);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        
+        // 2b. Q, K, V projections
+        await runINT4Matmul(
+          workBuffers.normed, 
+          layerBufs.q_proj.packed, 
+          layerBufs.q_proj.scales,
+          workBuffers.q, 
+          H, H
+        );
+        
+        await runINT4Matmul(
+          workBuffers.normed,
+          layerBufs.k_proj.packed,
+          layerBufs.k_proj.scales,
+          workBuffers.k,
+          H, CONFIG.num_key_value_heads * CONFIG.head_dim
+        );
+        
+        await runINT4Matmul(
+          workBuffers.normed,
+          layerBufs.v_proj.packed,
+          layerBufs.v_proj.scales,
+          workBuffers.v,
+          H, CONFIG.num_key_value_heads * CONFIG.head_dim
+        );
+        
+        // 2c. RoPE
+        bg = device.createBindGroup({
+          layout: pipelines.rope.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: workBuffers.q } },
+            { binding: 1, resource: { buffer: workBuffers.k } },
+            { binding: 2, resource: { buffer: workBuffers.position } }
+          ]
+        });
+        
+        encoder = device.createCommandEncoder();
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.rope);
+        pass.setBindGroup(0, bg);
+        // RoPE processes NUM_Q_HEADS * HALF_DIM elements, wgSize=256
+        pass.dispatchWorkgroups(Math.ceil((CONFIG.num_attention_heads * CONFIG.head_dim / 2) / 256));
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        
+        // 2d. Update KV cache
+        const kvSize = CONFIG.num_key_value_heads * CONFIG.head_dim * 4;
+        const cacheOffset = position * CONFIG.num_key_value_heads * CONFIG.head_dim * 4;
+        
+        encoder = device.createCommandEncoder();
+        encoder.copyBufferToBuffer(workBuffers.k, 0, kvCache.kCacheBuffers[layer], cacheOffset, kvSize);
+        encoder.copyBufferToBuffer(workBuffers.v, 0, kvCache.vCacheBuffers[layer], cacheOffset, kvSize);
+        device.queue.submit([encoder.finish()]);
+        
+        // 2e. Attention
+        bg = device.createBindGroup({
+          layout: pipelines.attention.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: workBuffers.q } },
+            { binding: 1, resource: { buffer: kvCache.kCacheBuffers[layer] } },
+            { binding: 2, resource: { buffer: kvCache.vCacheBuffers[layer] } },
+            { binding: 3, resource: { buffer: kvCache.seqLenBuffer } },
+            { binding: 4, resource: { buffer: workBuffers.attnOut } }
+          ]
+        });
+        
+        encoder = device.createCommandEncoder();
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.attention);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(CONFIG.num_attention_heads);  // One workgroup per Q head
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        
+        // 2f. O projection
+        await runINT4Matmul(
+          workBuffers.attnOut,
+          layerBufs.o_proj.packed,
+          layerBufs.o_proj.scales,
+          workBuffers.hidden,
+          H, H
+        );
+        
+        // 2g. Residual add
+        bg = device.createBindGroup({
+          layout: pipelines.add.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: workBuffers.hidden } },
+            { binding: 1, resource: { buffer: workBuffers.residual } }
+          ]
+        });
+        
+        encoder = device.createCommandEncoder();
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.add);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(Math.ceil(H / 256));
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        
+        // Save new residual
+        encoder = device.createCommandEncoder();
+        encoder.copyBufferToBuffer(workBuffers.hidden, 0, workBuffers.residual, 0, H * 4);
+        device.queue.submit([encoder.finish()]);
+        
+        // 2h. Post-attention LayerNorm
+        bg = device.createBindGroup({
+          layout: pipelines.rmsNorm.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: workBuffers.hidden } },
+            { binding: 1, resource: { buffer: layerBufs.post_attention_layernorm } },
+            { binding: 2, resource: { buffer: workBuffers.normed } }
+          ]
+        });
+        
+        encoder = device.createCommandEncoder();
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.rmsNorm);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(1);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        
+        // 2i. MLP: gate_proj and up_proj
+        await runINT4Matmul(
+          workBuffers.normed,
+          layerBufs.gate_proj.packed,
+          layerBufs.gate_proj.scales,
+          workBuffers.gate,
+          H, I
+        );
+        
+        await runINT4Matmul(
+          workBuffers.normed,
+          layerBufs.up_proj.packed,
+          layerBufs.up_proj.scales,
+          workBuffers.up,
+          H, I
+        );
+        
+        // 2j. SiLU and multiply
+        bg = device.createBindGroup({
+          layout: pipelines.siluMul.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: workBuffers.gate } },
+            { binding: 1, resource: { buffer: workBuffers.up } }
+          ]
+        });
+        
+        encoder = device.createCommandEncoder();
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.siluMul);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(Math.ceil(I / 256));
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        
+        // 2k. down_proj
+        await runINT4Matmul(
+          workBuffers.gate,
+          layerBufs.down_proj.packed,
+          layerBufs.down_proj.scales,
+          workBuffers.hidden,
+          I, H
+        );
+        
+        // 2l. Residual add
+        bg = device.createBindGroup({
+          layout: pipelines.add.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: workBuffers.hidden } },
+            { binding: 1, resource: { buffer: workBuffers.residual } }
+          ]
+        });
+        
+        encoder = device.createCommandEncoder();
+        pass = encoder.beginComputePass();
+        pass.setPipeline(pipelines.add);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(Math.ceil(H / 256));
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+      }
+      
+      // 3. Final LayerNorm
+      let bg = device.createBindGroup({
+        layout: pipelines.rmsNorm.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: workBuffers.hidden } },
+          { binding: 1, resource: { buffer: modelBuffers.norm } },
+          { binding: 2, resource: { buffer: workBuffers.normed } }
+        ]
+      });
+      
+      encoder = device.createCommandEncoder();
+      let pass = encoder.beginComputePass();
+      pass.setPipeline(pipelines.rmsNorm);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(1);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+      
+      // 4. LM Head
+      const logitsBuffer = await lmHead.forward(workBuffers.normed);
+      
+      return logitsBuffer;
+    }
+    
+    // ============================================
+    // Chat Functions
+    // ============================================
+    function formatPrompt(messages) {
+      // Qwen2.5 chat template
+      let tokens = [];
+      
+      // System message
+      tokens.push(IM_START);
+      tokens.push(...tokenizer.encode('system'));
+      tokens.push(NEWLINE);
+      tokens.push(...tokenizer.encode('You are a helpful assistant.'));
+      tokens.push(IM_END);
+      tokens.push(NEWLINE);
+      
+      // Conversation history
+      for (const msg of messages) {
+        tokens.push(IM_START);
+        tokens.push(...tokenizer.encode(msg.role));
+        tokens.push(NEWLINE);
+        tokens.push(...tokenizer.encode(msg.content));
+        tokens.push(IM_END);
+        tokens.push(NEWLINE);
+      }
+      
+      // Assistant prefix
+      tokens.push(IM_START);
+      tokens.push(...tokenizer.encode('assistant'));
+      tokens.push(NEWLINE);
+      
+      return tokens;
+    }
+    
+    let chatHistory = [];
+    
+    function addMessage(role, content) {
+      const messagesDiv = document.getElementById('chatMessages');
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `message ${role}`;
+      msgDiv.innerHTML = `
+        <div class="message-header">${role}</div>
+        <div class="message-content">${content}</div>
+      `;
+      messagesDiv.appendChild(msgDiv);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      return msgDiv;
+    }
+    
+    function updateMessage(msgDiv, content, showCursor = false) {
+      const contentDiv = msgDiv.querySelector('.message-content');
+      contentDiv.innerHTML = content + (showCursor ? '<span class="cursor"></span>' : '');
+      const messagesDiv = document.getElementById('chatMessages');
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+    
+    function updateStats(tokens, startTime) {
+      const elapsed = (performance.now() - startTime) / 1000;
+      const speed = tokens / elapsed;
+      const msPerToken = elapsed * 1000 / tokens;
+      
+      document.getElementById('statTokens').textContent = tokens;
+      document.getElementById('statSpeed').textContent = speed.toFixed(2);
+      document.getElementById('statTime').textContent = msPerToken.toFixed(0);
+      document.getElementById('statTotal').textContent = elapsed.toFixed(1);
+    }
+    
+    async function sendMessage() {
+      const input = document.getElementById('userInput');
+      const userText = input.value.trim();
+      
+      if (!userText || isGenerating) return;
+      
+      input.value = '';
+      isGenerating = true;
+      shouldStop = false;
+      
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+      
+      // Add user message
+      addMessage('user', userText);
+      chatHistory.push({ role: 'user', content: userText });
+      
+      // Create assistant message placeholder
+      const assistantMsg = addMessage('assistant', '');
+      
+      try {
+        // Format prompt
+        const promptTokens = formatPrompt(chatHistory);
+        log(`Prompt tokens: ${promptTokens.length}`, 'info');
+        
+        // Reset KV cache
+        kvCache.reset();
+        
+        // Update sampler settings
+        sampler.setParams({
+          temperature: parseFloat(document.getElementById('temperature').value),
+          topK: parseInt(document.getElementById('topK').value),
+          topP: parseFloat(document.getElementById('topP').value),
+          repetitionPenalty: parseFloat(document.getElementById('repPenalty').value)
+        });
+        
+        const maxTokens = parseInt(document.getElementById('maxTokens').value);
+        
+        // Process prompt tokens (prefill)
+        log('Processing prompt...', 'info');
+        const prefillStart = performance.now();
+        
+        let logitsBuffer;
+        for (let i = 0; i < promptTokens.length; i++) {
+          logitsBuffer = await forwardToken(promptTokens[i], i);
+          kvCache.seqLen = i + 1;
+          kvCache.updateSeqLenBuffer();
+        }
+        
+        const prefillTime = performance.now() - prefillStart;
+        log(`Prefill: ${promptTokens.length} tokens in ${(prefillTime/1000).toFixed(2)}s (${(promptTokens.length/(prefillTime/1000)).toFixed(1)} tok/s)`, 'info');
+        
+        // DEBUG: Read logits after prefill
+        {
+          const readBuf = device.createBuffer({ size: 40, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+          const enc = device.createCommandEncoder();
+          enc.copyBufferToBuffer(logitsBuffer, 0, readBuf, 0, 40);
+          device.queue.submit([enc.finish()]);
+          await readBuf.mapAsync(GPUMapMode.READ);
+          const logitsPreview = new Float32Array(readBuf.getMappedRange().slice(0));
+          readBuf.unmap();
+          log(`DEBUG: Logits[0:9] after prefill: [${Array.from(logitsPreview).map(x => x.toFixed(2)).join(', ')}]`, 'warn');
+          
+          // Check for NaN/Inf
+          let hasNan = false, hasInf = false;
+          for (const v of logitsPreview) {
+            if (isNaN(v)) hasNan = true;
+            if (!isFinite(v)) hasInf = true;
+          }
+          if (hasNan || hasInf) {
+            log(`DEBUG: FOUND NaN=${hasNan}, Inf=${hasInf} in logits!`, 'error');
+          }
+        }
+        
+        // Generate tokens
+        let generatedText = '';
+        let generatedTokens = [];
+        const genStart = performance.now();
+        
+        for (let i = 0; i < maxTokens && !shouldStop; i++) {
+          // Sample next token from current logits
+          const allTokens = [...promptTokens, ...generatedTokens];
+          const { tokenId } = await sampler.sample(logitsBuffer, allTokens);
+          
+          // DEBUG: Log sampled token
+          if (i < 5) {
+            log(`DEBUG: Generated token ${i}: ${tokenId} = "${tokenizer.decode([tokenId])}"`, 'warn');
+          }
+          
+          // Check for EOS
+          if (tokenId === IM_END || tokenId === 151643) {
+            log('EOS token generated', 'info');
+            break;
+          }
+          
+          generatedTokens.push(tokenId);
+          
+          // Decode and display
+          const tokenText = tokenizer.decode([tokenId]);
+          generatedText += tokenText;
+          updateMessage(assistantMsg, generatedText, true);
+          
+          // Update stats
+          updateStats(i + 1, genStart);
+          
+          // Yield to UI
+          await new Promise(r => setTimeout(r, 0));
+          
+          // Forward the sampled token to get next logits
+          const position = promptTokens.length + i;
+          logitsBuffer = await forwardToken(tokenId, position);
+          kvCache.seqLen = position + 1;
+          kvCache.updateSeqLenBuffer();
+        }
+        
+        // Final update
+        updateMessage(assistantMsg, generatedText, false);
+        chatHistory.push({ role: 'assistant', content: generatedText });
+        
+        const totalTime = (performance.now() - genStart) / 1000;
+        log(`Generated ${generatedTokens.length} tokens in ${totalTime.toFixed(2)}s (${(generatedTokens.length/totalTime).toFixed(2)} tok/s)`, 'success');
+        
+      } catch (err) {
+        log(`Error: ${err.message}`, 'error');
+        console.error(err);
+        updateMessage(assistantMsg, `Error: ${err.message}`, false);
+      }
+      
+      isGenerating = false;
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+    }
+    
+    function stopGeneration() {
+      shouldStop = true;
+      log('Generation stopped by user', 'warn');
+    }
+    
+    // Handle Enter key
+    document.getElementById('userInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>

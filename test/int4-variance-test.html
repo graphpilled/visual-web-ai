@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>INT4 - Variance & Final Push</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .warn { color: #fbbf24; }
+    .header { color: #c084fc; font-weight: bold; }
+    .gold { color: #fcd34d; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>🔬 INT4 - Variance Analysis & Final Push</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const log = (msg, cls = '') => {
+      const span = cls ? `<span class="${cls}">${msg}</span>` : msg;
+      document.getElementById('output').innerHTML += span + '\n';
+    };
+
+    function quantizeTransposed(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      const packedK = Math.ceil(K / 8);
+      const packed = new Uint32Array(packedK * N);
+      const scales = new Float32Array(numGroups * N);
+      for (let i = 0; i < packed.length; i++) packed[i] = Math.random() * 0xFFFFFFFF >>> 0;
+      for (let i = 0; i < scales.length; i++) scales[i] = Math.random() * 0.1;
+      return { packed, scales, packedK, numGroups };
+    }
+
+    // V29 - wg=48 baseline
+    function createV29(K, N, groupSize) {
+      const numGroups = Math.ceil(K / groupSize);
+      return `
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b_packed: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+const N = ${N}u;
+const NUM_GROUPS = ${numGroups}u;
+const PACKED_PER_GROUP = 16u;
+@compute @workgroup_size(48)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let col = gid.x;
+  if (col >= N) { return; }
+  var sum = 0.0;
+  for (var g = 0u; g < NUM_GROUPS; g++) {
+    let s = scales[g * N + col];
+    let base = g * PACKED_PER_GROUP;
+    var acc = 0.0;
+    let p0 = b_packed[base * N + col];
+    let p1 = b_packed[(base + 1u) * N + col];
+    let p2 = b_packed[(base + 2u) * N + col];
+    let p3 = b_packed[(base + 3u) * N + col];
+    let p4 = b_packed[(base + 4u) * N + col];
+    let p5 = b_packed[(base + 5u) * N + col];
+    let p6 = b_packed[(base + 6u) * N + col];
+    let p7 = b_packed[(base + 7u) * N + col];
+    let k0 = base * 8u;
+    let a0 = a[k0/4u]; let a1 = a[k0/4u+1u]; let a2 = a[k0/4u+2u]; let a3 = a[k0/4u+3u];
+    let a4 = a[k0/4u+4u]; let a5 = a[k0/4u+5u]; let a6 = a[k0/4u+6u]; let a7 = a[k0/4u+7u];
+    let a8 = a[k0/4u+8u]; let a9 = a[k0/4u+9u]; let a10 = a[k0/4u+10u]; let a11 = a[k0/4u+11u];
+    let a12 = a[k0/4u+12u]; let a13 = a[k0/4u+13u]; let a14 = a[k0/4u+14u]; let a15 = a[k0/4u+15u];
+    acc += dot(a0, vec4<f32>(f32((p0>>0u)&0xFu)-8.0, f32((p0>>4u)&0xFu)-8.0, f32((p0>>8u)&0xFu)-8.0, f32((p0>>12u)&0xFu)-8.0));
+    acc += dot(a1, vec4<f32>(f32((p0>>16u)&0xFu)-8.0, f32((p0>>20u)&0xFu)-8.0, f32((p0>>24u)&0xFu)-8.0, f32((p0>>28u)&0xFu)-8.0));
+    acc += dot(a2, vec4<f32>(f32((p1>>0u)&0xFu)-8.0, f32((p1>>4u)&0xFu)-8.0, f32((p1>>8u)&0xFu)-8.0, f32((p1>>12u)&0xFu)-8.0));
+    acc += dot(a3, vec4<f32>(f32((p1>>16u)&0xFu)-8.0, f32((p1>>20u)&0xFu)-8.0, f32((p1>>24u)&0xFu)-8.0, f32((p1>>28u)&0xFu)-8.0));
+    acc += dot(a4, vec4<f32>(f32((p2>>0u)&0xFu)-8.0, f32((p2>>4u)&0xFu)-8.0, f32((p2>>8u)&0xFu)-8.0, f32((p2>>12u)&0xFu)-8.0));
+    acc += dot(a5, vec4<f32>(f32((p2>>16u)&0xFu)-8.0, f32((p2>>20u)&0xFu)-8.0, f32((p2>>24u)&0xFu)-8.0, f32((p2>>28u)&0xFu)-8.0));
+    acc += dot(a6, vec4<f32>(f32((p3>>0u)&0xFu)-8.0, f32((p3>>4u)&0xFu)-8.0, f32((p3>>8u)&0xFu)-8.0, f32((p3>>12u)&0xFu)-8.0));
+    acc += dot(a7, vec4<f32>(f32((p3>>16u)&0xFu)-8.0, f32((p3>>20u)&0xFu)-8.0, f32((p3>>24u)&0xFu)-8.0, f32((p3>>28u)&0xFu)-8.0));
+    acc += dot(a8, vec4<f32>(f32((p4>>0u)&0xFu)-8.0, f32((p4>>4u)&0xFu)-8.0, f32((p4>>8u)&0xFu)-8.0, f32((p4>>12u)&0xFu)-8.0));
+    acc += dot(a9, vec4<f32>(f32((p4>>16u)&0xFu)-8.0, f32((p4>>20u)&0xFu)-8.0, f32((p4>>24u)&0xFu)-8.0, f32((p4>>28u)&0xFu)-8.0));
+    acc += dot(a10, vec4<f32>(f32((p5>>0u)&0xFu)-8.0, f32((p5>>4u)&0xFu)-8.0, f32((p5>>8u)&0xFu)-8.0, f32((p5>>12u)&0xFu)-8.0));
+    acc += dot(a11, vec4<f32>(f32((p5>>16u)&0xFu)-8.0, f32((p5>>20u)&0xFu)-8.0, f32((p5>>24u)&0xFu)-8.0, f32((p5>>28u)&0xFu)-8.0));
+    acc += dot(a12, vec4<f32>(f32((p6>>0u)&0xFu)-8.0, f32((p6>>4u)&0xFu)-8.0, f32((p6>>8u)&0xFu)-8.0, f32((p6>>12u)&0xFu)-8.0));
+    acc += dot(a13, vec4<f32>(f32((p6>>16u)&0xFu)-8.0, f32((p6>>20u)&0xFu)-8.0, f32((p6>>24u)&0xFu)-8.0, f32((p6>>28u)&0xFu)-8.0));
+    acc += dot(a14, vec4<f32>(f32((p7>>0u)&0xFu)-8.0, f32((p7>>4u)&0xFu)-8.0, f32((p7>>8u)&0xFu)-8.0, f32((p7>>12u)&0xFu)-8.0));
+    acc += dot(a15, vec4<f32>(f32((p7>>16u)&0xFu)-8.0, f32((p7>>20u)&0xFu)-8.0, f32((p7>>24u)&0xFu)-8.0, f32((p7>>28u)&0xFu)-8.0));
+    let q0 = b_packed[(base + 8u) * N + col];
+    let q1 = b_packed[(base + 9u) * N + col];
+    let q2 = b_packed[(base + 10u) * N + col];
+    let q3 = b_packed[(base + 11u) * N + col];
+    let q4 = b_packed[(base + 12u) * N + col];
+    let q5 = b_packed[(base + 13u) * N + col];
+    let q6 = b_packed[(base + 14u) * N + col];
+    let q7 = b_packed[(base + 15u) * N + col];
+    let k1 = (base + 8u) * 8u;
+    let b0 = a[k1/4u]; let b1 = a[k1/4u+1u]; let b2 = a[k1/4u+2u]; let b3 = a[k1/4u+3u];
+    let b4 = a[k1/4u+4u]; let b5 = a[k1/4u+5u]; let b6 = a[k1/4u+6u]; let b7 = a[k1/4u+7u];
+    let b8 = a[k1/4u+8u]; let b9 = a[k1/4u+9u]; let b10 = a[k1/4u+10u]; let b11 = a[k1/4u+11u];
+    let b12 = a[k1/4u+12u]; let b13 = a[k1/4u+13u]; let b14 = a[k1/4u+14u]; let b15 = a[k1/4u+15u];
+    acc += dot(b0, vec4<f32>(f32((q0>>0u)&0xFu)-8.0, f32((q0>>4u)&0xFu)-8.0, f32((q0>>8u)&0xFu)-8.0, f32((q0>>12u)&0xFu)-8.0));
+    acc += dot(b1, vec4<f32>(f32((q0>>16u)&0xFu)-8.0, f32((q0>>20u)&0xFu)-8.0, f32((q0>>24u)&0xFu)-8.0, f32((q0>>28u)&0xFu)-8.0));
+    acc += dot(b2, vec4<f32>(f32((q1>>0u)&0xFu)-8.0, f32((q1>>4u)&0xFu)-8.0, f32((q1>>8u)&0xFu)-8.0, f32((q1>>12u)&0xFu)-8.0));
+    acc += dot(b3, vec4<f32>(f32((q1>>16u)&0xFu)-8.0, f32((q1>>20u)&0xFu)-8.0, f32((q1>>24u)&0xFu)-8.0, f32((q1>>28u)&0xFu)-8.0));
+    acc += dot(b4, vec4<f32>(f32((q2>>0u)&0xFu)-8.0, f32((q2>>4u)&0xFu)-8.0, f32((q2>>8u)&0xFu)-8.0, f32((q2>>12u)&0xFu)-8.0));
+    acc += dot(b5, vec4<f32>(f32((q2>>16u)&0xFu)-8.0, f32((q2>>20u)&0xFu)-8.0, f32((q2>>24u)&0xFu)-8.0, f32((q2>>28u)&0xFu)-8.0));
+    acc += dot(b6, vec4<f32>(f32((q3>>0u)&0xFu)-8.0, f32((q3>>4u)&0xFu)-8.0, f32((q3>>8u)&0xFu)-8.0, f32((q3>>12u)&0xFu)-8.0));
+    acc += dot(b7, vec4<f32>(f32((q3>>16u)&0xFu)-8.0, f32((q3>>20u)&0xFu)-8.0, f32((q3>>24u)&0xFu)-8.0, f32((q3>>28u)&0xFu)-8.0));
+    acc += dot(b8, vec4<f32>(f32((q4>>0u)&0xFu)-8.0, f32((q4>>4u)&0xFu)-8.0, f32((q4>>8u)&0xFu)-8.0, f32((q4>>12u)&0xFu)-8.0));
+    acc += dot(b9, vec4<f32>(f32((q4>>16u)&0xFu)-8.0, f32((q4>>20u)&0xFu)-8.0, f32((q4>>24u)&0xFu)-8.0, f32((q4>>28u)&0xFu)-8.0));
+    acc += dot(b10, vec4<f32>(f32((q5>>0u)&0xFu)-8.0, f32((q5>>4u)&0xFu)-8.0, f32((q5>>8u)&0xFu)-8.0, f32((q5>>12u)&0xFu)-8.0));
+    acc += dot(b11, vec4<f32>(f32((q5>>16u)&0xFu)-8.0, f32((q5>>20u)&0xFu)-8.0, f32((q5>>24u)&0xFu)-8.0, f32((q5>>28u)&0xFu)-8.0));
+    acc += dot(b12, vec4<f32>(f32((q6>>0u)&0xFu)-8.0, f32((q6>>4u)&0xFu)-8.0, f32((q6>>8u)&0xFu)-8.0, f32((q6>>12u)&0xFu)-8.0));
+    acc += dot(b13, vec4<f32>(f32((q6>>16u)&0xFu)-8.0, f32((q6>>20u)&0xFu)-8.0, f32((q6>>24u)&0xFu)-8.0, f32((q6>>28u)&0xFu)-8.0));
+    acc += dot(b14, vec4<f32>(f32((q7>>0u)&0xFu)-8.0, f32((q7>>4u)&0xFu)-8.0, f32((q7>>8u)&0xFu)-8.0, f32((q7>>12u)&0xFu)-8.0));
+    acc += dot(b15, vec4<f32>(f32((q7>>16u)&0xFu)-8.0, f32((q7>>20u)&0xFu)-8.0, f32((q7>>24u)&0xFu)-8.0, f32((q7>>28u)&0xFu)-8.0));
+    sum += acc * s;
+  }
+  output[col] = sum;
+}`;
+    }
+
+    async function benchmark() {
+      log('=== 🔬 Variance Analysis & Final Push ===\n', 'header');
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize
+        }
+      });
+      
+      const K = 4096, N = 11008, GROUP_SIZE = 128;
+      const q = quantizeTransposed(K, N, GROUP_SIZE);
+      const aData = new Float32Array(K).fill(0.1);
+      
+      log(`Testing V29 (wg=48) multiple times to understand variance...\n`);
+      
+      async function bench() {
+        const buffers = {
+          a: device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          packed: device.createBuffer({ size: q.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          scales: device.createBuffer({ size: q.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          output: device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE })
+        };
+        
+        device.queue.writeBuffer(buffers.a, 0, aData);
+        device.queue.writeBuffer(buffers.packed, 0, q.packed);
+        device.queue.writeBuffer(buffers.scales, 0, q.scales);
+        
+        const module = device.createShaderModule({ code: createV29(K, N, GROUP_SIZE) });
+        const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: buffers.a } },
+            { binding: 1, resource: { buffer: buffers.packed } },
+            { binding: 2, resource: { buffer: buffers.scales } },
+            { binding: 3, resource: { buffer: buffers.output } }
+          ]
+        });
+        
+        const workgroups = Math.ceil(N / 48);
+        const iterations = 100;
+        
+        // Warmup
+        for (let i = 0; i < 30; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Measure
+        const start = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const time = (performance.now() - start) / iterations;
+        
+        for (const buf of Object.values(buffers)) buf.destroy();
+        
+        const bytes = K * 4 + q.packed.byteLength + q.scales.byteLength + N * 4;
+        const bw = bytes / (time / 1000) / 1e9;
+        
+        return { time, bw };
+      }
+      
+      // Run 10 times to see variance
+      const runs = [];
+      for (let i = 0; i < 10; i++) {
+        // Small delay between runs
+        await new Promise(r => setTimeout(r, 100));
+        const r = await bench();
+        runs.push(r);
+        log(`Run ${i+1}: ${r.time.toFixed(3)}ms | ${r.bw.toFixed(2)} GB/s`);
+      }
+      
+      const times = runs.map(r => r.time);
+      const bws = runs.map(r => r.bw);
+      
+      const minTime = Math.min(...times);
+      const maxTime = Math.max(...times);
+      const avgTime = times.reduce((a, b) => a + b) / times.length;
+      const minBw = Math.min(...bws);
+      const maxBw = Math.max(...bws);
+      const avgBw = bws.reduce((a, b) => a + b) / bws.length;
+      
+      log('\n--- Statistics ---', 'header');
+      log(`Time: min=${minTime.toFixed(3)}ms, max=${maxTime.toFixed(3)}ms, avg=${avgTime.toFixed(3)}ms`);
+      log(`BW:   min=${minBw.toFixed(2)}, max=${maxBw.toFixed(2)}, avg=${avgBw.toFixed(2)} GB/s`);
+      log(`Variance: ${((maxTime - minTime) / avgTime * 100).toFixed(1)}%`);
+      
+      // Project 7B performance using average
+      log('\n--- 7B Projection (using average) ---', 'header');
+      const qkvTime = avgTime * (4096 / 11008) * 4;
+      const gateUpTime = avgTime * 2;
+      const downTime = avgTime * (11008 / 4096) / (11008 / 4096);  // roughly same
+      
+      // More accurate: test each size
+      log('\nTesting each matrix size...');
+      
+      async function benchSize(K, N, name) {
+        const q2 = quantizeTransposed(K, N, GROUP_SIZE);
+        const aData2 = new Float32Array(K).fill(0.1);
+        
+        const buffers = {
+          a: device.createBuffer({ size: K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          packed: device.createBuffer({ size: q2.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          scales: device.createBuffer({ size: q2.scales.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+          output: device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE })
+        };
+        
+        device.queue.writeBuffer(buffers.a, 0, aData2);
+        device.queue.writeBuffer(buffers.packed, 0, q2.packed);
+        device.queue.writeBuffer(buffers.scales, 0, q2.scales);
+        
+        const numGroups = Math.ceil(K / GROUP_SIZE);
+        const code = createV29(K, N, GROUP_SIZE);
+        const module = device.createShaderModule({ code });
+        const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: buffers.a } },
+            { binding: 1, resource: { buffer: buffers.packed } },
+            { binding: 2, resource: { buffer: buffers.scales } },
+            { binding: 3, resource: { buffer: buffers.output } }
+          ]
+        });
+        
+        const workgroups = Math.ceil(N / 48);
+        
+        // Warmup
+        for (let i = 0; i < 30; i++) {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(workgroups);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        }
+        await device.queue.onSubmittedWorkDone();
+        
+        // Multiple measurements
+        const times = [];
+        for (let run = 0; run < 5; run++) {
+          const iterations = 100;
+          const start = performance.now();
+          for (let i = 0; i < iterations; i++) {
+            const enc = device.createCommandEncoder();
+            const pass = enc.beginComputePass();
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, bindGroup);
+            pass.dispatchWorkgroups(workgroups);
+            pass.end();
+            device.queue.submit([enc.finish()]);
+          }
+          await device.queue.onSubmittedWorkDone();
+          times.push((performance.now() - start) / iterations);
+        }
+        
+        for (const buf of Object.values(buffers)) buf.destroy();
+        
+        const minTime = Math.min(...times);
+        const avgTime = times.reduce((a, b) => a + b) / times.length;
+        const bytes = K * 4 + q2.packed.byteLength + q2.scales.byteLength + N * 4;
+        
+        return { 
+          minTime, 
+          avgTime,
+          minBw: bytes / (minTime / 1000) / 1e9,
+          avgBw: bytes / (avgTime / 1000) / 1e9
+        };
+      }
+      
+      const qkv = await benchSize(4096, 4096, 'QKV');
+      log(`QKV [4096→4096]:     min=${qkv.minTime.toFixed(3)}ms (${qkv.minBw.toFixed(2)} GB/s), avg=${qkv.avgTime.toFixed(3)}ms`);
+      
+      const gateUp = await benchSize(4096, 11008, 'Gate/Up');
+      log(`Gate/Up [4096→11008]: min=${gateUp.minTime.toFixed(3)}ms (${gateUp.minBw.toFixed(2)} GB/s), avg=${gateUp.avgTime.toFixed(3)}ms`);
+      
+      const down = await benchSize(11008, 4096, 'Down');
+      log(`Down [11008→4096]:   min=${down.minTime.toFixed(3)}ms (${down.minBw.toFixed(2)} GB/s), avg=${down.avgTime.toFixed(3)}ms`);
+      
+      // Calculate 7B performance
+      log('\n--- 7B Model Performance ---', 'header');
+      
+      const perLayerMin = qkv.minTime * 4 + gateUp.minTime * 2 + down.minTime;
+      const perLayerAvg = qkv.avgTime * 4 + gateUp.avgTime * 2 + down.avgTime;
+      
+      const otherOps = (0.09 * 2 + 0.31 + 0.46) * 32;
+      
+      const totalMin = perLayerMin * 32 + otherOps;
+      const totalAvg = perLayerAvg * 32 + otherOps;
+      
+      log(`\nUsing BEST times (min):`);
+      log(`  Per layer: ${perLayerMin.toFixed(2)}ms`);
+      log(`  32 layers: ${(perLayerMin * 32).toFixed(0)}ms`);
+      log(`  + other:   ${otherOps.toFixed(0)}ms`);
+      log(`  Total:     ${totalMin.toFixed(0)}ms`);
+      log(`  🏆 BEST:   ${(1000 / totalMin).toFixed(2)} tok/s`, 'gold');
+      
+      log(`\nUsing AVERAGE times:`);
+      log(`  Per layer: ${perLayerAvg.toFixed(2)}ms`);
+      log(`  32 layers: ${(perLayerAvg * 32).toFixed(0)}ms`);
+      log(`  + other:   ${otherOps.toFixed(0)}ms`);
+      log(`  Total:     ${totalAvg.toFixed(0)}ms`);
+      log(`  Average:   ${(1000 / totalAvg).toFixed(2)} tok/s`);
+      
+      // Summary
+      log('\n--- Final Summary ---', 'header');
+      log(`\nBandwidth achieved: ${Math.max(qkv.minBw, gateUp.minBw, down.minBw).toFixed(2)} GB/s (peak)`);
+      log(`Theoretical limit:  ~12.5-13 GB/s`);
+      log(`Efficiency:         ${(Math.max(qkv.minBw, gateUp.minBw, down.minBw) / 12.5 * 100).toFixed(1)}%`);
+    }
+    
+    benchmark().catch(e => {
+      log(`ERROR: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

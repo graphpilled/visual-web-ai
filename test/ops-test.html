@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>New Operations Test</title>
+</head>
+<body>
+  <h1>New Operations Test (Where, Gather, TopK, Sin/Cos, Clip)</h1>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { GPURuntime, GraphExecutor } from '../src/runtime.js';
+    import { Compiler } from '../dist/bundle.js';
+
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+
+    async function test() {
+      try {
+        log('=== New Operations Tests ===\n');
+
+        const runtime = new GPURuntime();
+        await runtime.init();
+        log('✓ Runtime initialized\n');
+
+        // =====================
+        // Test 1: Where (conditional selection)
+        // =====================
+        log('Test 1: Where (conditional selection)');
+        const graph1 = Compiler.createGraph();
+        const cond1 = Compiler.input(graph1, [4], "condition");
+        const xTrue1 = Compiler.input(graph1, [4], "x_true");
+        const xFalse1 = Compiler.input(graph1, [4], "x_false");
+        const y1 = Compiler.where(graph1, cond1, xTrue1, xFalse1);
+
+        const compiled1 = Compiler.compile(graph1);
+        const executor1 = new GraphExecutor(runtime, compiled1);
+        await executor1.init();
+
+        // condition > 0 selects from x_true, else x_false
+        const condData = new Float32Array([1, 0, 1, -1]);  // true, false, true, false
+        const trueData = new Float32Array([10, 20, 30, 40]);
+        const falseData = new Float32Array([1, 2, 3, 4]);
+
+        const output1 = await executor1.execute(condData, trueData, falseData);
+        const expected1 = [10, 2, 30, 4];  // select based on condition
+        const pass1 = expected1.every((v, i) => Math.abs(output1[i] - v) < 0.01);
+
+        log(`  Condition: [${condData}]`);
+        log(`  True values: [${trueData}]`);
+        log(`  False values: [${falseData}]`);
+        log(`  Output: [${Array.from(output1)}]`);
+        log(`  Expected: [${expected1}]`);
+        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor1.destroy();
+
+        // =====================
+        // Test 2: Gather (index selection)
+        // =====================
+        log('\nTest 2: Gather (index selection)');
+        const graph2 = Compiler.createGraph();
+        const data2 = Compiler.input(graph2, [4, 3], "data");  // 4 rows, 3 cols
+        const indices2 = Compiler.input(graph2, [2], "indices");
+        const y2 = Compiler.gather(graph2, data2, indices2, 0);  // gather along axis 0
+
+        const compiled2 = Compiler.compile(graph2);
+        const executor2 = new GraphExecutor(runtime, compiled2);
+        await executor2.init();
+
+        // Data: 4x3 matrix, indices select rows
+        const dataArr = new Float32Array([
+          1, 2, 3,    // row 0
+          4, 5, 6,    // row 1
+          7, 8, 9,    // row 2
+          10, 11, 12  // row 3
+        ]);
+        const indicesArr = new Float32Array([0, 2]);  // select rows 0 and 2
+
+        const output2 = await executor2.execute(dataArr, indicesArr);
+        const expected2 = [1, 2, 3, 7, 8, 9];  // rows 0 and 2
+        const pass2 = expected2.every((v, i) => Math.abs(output2[i] - v) < 0.01);
+
+        log(`  Data: 4x3 matrix`);
+        log(`  Indices: [0, 2] (select rows 0 and 2)`);
+        log(`  Output: [${Array.from(output2)}]`);
+        log(`  Expected: [${expected2}]`);
+        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor2.destroy();
+
+        // =====================
+        // Test 3: Sin/Cos
+        // =====================
+        log('\nTest 3: Sin and Cos');
+        const graph3 = Compiler.createGraph();
+        const x3 = Compiler.input(graph3, [4], "input");
+        const sinOut = Compiler.sin_(graph3, x3);
+        const cosOut = Compiler.cos_(graph3, x3);
+        Compiler.markOutput(graph3, sinOut);
+        Compiler.markOutput(graph3, cosOut);
+
+        const compiled3 = Compiler.compile(graph3);
+        const executor3 = new GraphExecutor(runtime, compiled3);
+        await executor3.init();
+
+        const angles = new Float32Array([0, Math.PI/2, Math.PI, 3*Math.PI/2]);
+        const outputs3 = await executor3.execute(angles);
+
+        log(`  Input: [0, π/2, π, 3π/2]`);
+        log(`  Sin output: [${Array.from(outputs3[0]).map(x => x.toFixed(3))}]`);
+        log(`  Cos output: [${Array.from(outputs3[1]).map(x => x.toFixed(3))}]`);
+
+        // sin(0)=0, sin(π/2)=1, sin(π)=0, sin(3π/2)=-1
+        const sinExpected = [0, 1, 0, -1];
+        const cosExpected = [1, 0, -1, 0];
+        const passSin = sinExpected.every((v, i) => Math.abs(outputs3[0][i] - v) < 0.01);
+        const passCos = cosExpected.every((v, i) => Math.abs(outputs3[1][i] - v) < 0.01);
+        log(`  ${passSin && passCos ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor3.destroy();
+
+        // =====================
+        // Test 4: Clip/Clamp
+        // =====================
+        log('\nTest 4: Clip/Clamp');
+        const graph4 = Compiler.createGraph();
+        const x4 = Compiler.input(graph4, [6], "input");
+        const y4 = Compiler.clamp(graph4, x4, -1.0, 1.0);
+
+        const compiled4 = Compiler.compile(graph4);
+        const executor4 = new GraphExecutor(runtime, compiled4);
+        await executor4.init();
+
+        const input4 = new Float32Array([-5, -0.5, 0, 0.5, 2, 10]);
+        const output4 = await executor4.execute(input4);
+        const expected4 = [-1, -0.5, 0, 0.5, 1, 1];  // clamped to [-1, 1]
+        const pass4 = expected4.every((v, i) => Math.abs(output4[i] - v) < 0.01);
+
+        log(`  Input: [${input4}]`);
+        log(`  Clamp(-1, 1): [${Array.from(output4)}]`);
+        log(`  Expected: [${expected4}]`);
+        log(`  ${pass4 ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor4.destroy();
+
+        // =====================
+        // Test 5: TopK (multi-output operation)
+        // =====================
+        log('\nTest 5: TopK (multi-output)');
+        const graph5 = Compiler.createGraph();
+        const x5 = Compiler.input(graph5, [8], "input");
+        const topkResult = Compiler.topk(graph5, x5, 3, 0);  // top 3 values
+        
+        // Mark both outputs
+        Compiler.markOutputRef(graph5, topkResult.values);
+        Compiler.markOutputRef(graph5, topkResult.indices);
+
+        const compiled5 = Compiler.compile(graph5);
+        log(`  Buffers: ${compiled5.buffers.length}, Ops: ${compiled5.ops.length}`);
+        log(`  Output buffer IDs: [${compiled5.outputBufferIds}]`);
+
+        const executor5 = new GraphExecutor(runtime, compiled5);
+        await executor5.init();
+
+        const input5 = new Float32Array([3, 1, 4, 1, 5, 9, 2, 6]);
+        const outputs5 = await executor5.execute(input5);
+
+        log(`  Input: [${input5}]`);
+        if (Array.isArray(outputs5)) {
+          log(`  Top-3 values: [${Array.from(outputs5[0]).map(x => x.toFixed(1))}]`);
+          log(`  Top-3 indices: [${Array.from(outputs5[1]).map(x => x.toFixed(0))}]`);
+          // Top 3 values should be 9, 6, 5 (descending)
+          const topValues = Array.from(outputs5[0]);
+          const pass5 = topValues[0] >= topValues[1] && topValues[1] >= topValues[2];
+          log(`  Top values descending: ${pass5 ? 'PASS ✓' : 'FAIL ✗'}`);
+        } else {
+          log(`  Single output: [${Array.from(outputs5).map(x => x.toFixed(1))}]`);
+          log(`  FAIL ✗ - Expected multiple outputs`);
+        }
+        executor5.destroy();
+
+        // =====================
+        // Test 6: Sinusoidal Positional Encoding
+        // =====================
+        log('\nTest 6: Sinusoidal Positional Encoding');
+        const graph6 = Compiler.createGraph();
+        const posEnc = Compiler.sinusoidalPositionalEncoding(graph6, 4, 8);
+        const x6 = Compiler.input(graph6, [4, 8], "input");
+        const y6 = Compiler.add(graph6, x6, posEnc);
+
+        const compiled6 = Compiler.compile(graph6);
+        const executor6 = new GraphExecutor(runtime, compiled6);
+        await executor6.init();
+
+        // Input zeros to just see the positional encoding
+        const zeros6 = new Float32Array(32).fill(0);
+        const output6 = await executor6.execute(zeros6);
+
+        log(`  Shape: [4, 8] (4 positions, 8 dimensions)`);
+        log(`  First position: [${Array.from(output6.slice(0, 8)).map(x => x.toFixed(3))}]`);
+        log(`  Second position: [${Array.from(output6.slice(8, 16)).map(x => x.toFixed(3))}]`);
+
+        // Check that positions are different
+        const pos0 = Array.from(output6.slice(0, 8));
+        const pos1 = Array.from(output6.slice(8, 16));
+        const different = pos0.some((v, i) => Math.abs(v - pos1[i]) > 0.01);
+        log(`  Positions are different: ${different ? 'PASS ✓' : 'FAIL ✗'}`);
+        executor6.destroy();
+
+        runtime.destroy();
+        log('\n=== All New Operations Tests Completed ===');
+
+      } catch (e) {
+        log('✗ Error: ' + e.message);
+        console.error(e);
+      }
+    }
+
+    test();
+  </script>
+</body>
+</html>

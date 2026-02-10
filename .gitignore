@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# ReScript build artifacts
+lib/bs/
+lib/ocaml/
+lib/rescript.lock
+*.ast
+*.cmi
+*.cmj
+*.cmt
+*.cmti
+
+# Build output (keep dist/bundle.js since the site needs it)
+# dist/
+
+# Compiled binaries
+esbuild
+npm
+rescript
+
+# Model weights (too large for git)
+test/Qwen2.5-0.5B-Instruct-GPTQ-Int4/model.safetensors
+test/Qwen2.5-7B-Instruct-GPTQ-Int4/model-00001-of-00002.safetensors
+test/Qwen2.5-7B-Instruct-GPTQ-Int4/model-00002-of-00002.safetensors
+
+# OS files
+.DS_Store
+test/Qwen2.5-0.5B-Instruct-GPTQ-Int4/
+test/Qwen2.5-7B-Instruct-GPTQ-Int4/
