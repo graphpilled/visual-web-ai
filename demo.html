@@ -585,15 +585,17 @@
           const d = BD[id];
           let el = document.createElement("div");
           el.className = "bi";
-          el.draggable = true;
           el.dataset.t = id;
           el.innerHTML = `<div class="bic" style="background:${d.col}22;color:${d.col}">${d.ico}</div><div class="bin">${d.n}</div>`;
-          el.addEventListener("dragstart", (e) => {
+
+          el.addEventListener("mousedown", (e) => {
+            e.preventDefault();
             dragging = id;
             gh.textContent = d.n;
             gh.classList.add("v");
             cva.classList.add("da");
-            const img = document.createElement("canvas"); img.width = 1; img.height = 1; e.dataTransfer.setDragImage(img, 0, 0);
+            gh.style.left = e.clientX + 10 + "px";
+            gh.style.top = e.clientY + 10 + "px";
           });
           sb.appendChild(el);
         });
@@ -1380,44 +1382,44 @@
         updUI();
         genCode();
       }
-
-      // Drag/Drop
-      document.addEventListener("dragover", (e) => {
-        e.preventDefault();
+      // Drag/Drop via mouse events (fixes Firefox drag ghost)
+      document.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
         gh.style.left = e.clientX + 10 + "px";
         gh.style.top = e.clientY + 10 + "px";
       });
-      document.addEventListener("dragend", () => {
-        dragging = null;
+      document.addEventListener("mouseup", (e) => {
+        if (!dragging) return;
         gh.classList.remove("v");
         cva.classList.remove("da");
-      });
-      cva.addEventListener("dragover", (e) => e.preventDefault());
-      cva.addEventListener("drop", (e) => {
-        e.preventDefault();
-        gh.classList.remove("v");
-        cva.classList.remove("da");
-        document.getElementById("hint").style.opacity = "0";
-        if (!dragging || !BD[dragging]) return;
-        const rc = new THREE.Raycaster(),
-          ms = new THREE.Vector2(),
-          rect = canvas.getBoundingClientRect();
-        ms.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-        ms.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-        rc.setFromCamera(ms, cam);
-        const hit = rc.intersectObject(gnd);
-        let pos;
-        if (hit.length > 0) {
-          pos = hit[0].point.clone();
-          pos.y = BD[dragging].g[1] / 2;
-        } else {
-          pos = new THREE.Vector3(
-            blocks.length * 2.8 - 6,
-            BD[dragging].g[1] / 2,
-            0,
-          );
+        const rect = canvas.getBoundingClientRect();
+        if (
+          e.clientX >= rect.left &&
+          e.clientX <= rect.right &&
+          e.clientY >= rect.top &&
+          e.clientY <= rect.bottom
+        ) {
+          document.getElementById("hint").style.opacity = "0";
+          const rc = new THREE.Raycaster(),
+            ms = new THREE.Vector2();
+          ms.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          ms.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+          rc.setFromCamera(ms, cam);
+          const hit = rc.intersectObject(gnd);
+          let pos;
+          if (hit.length > 0) {
+            pos = hit[0].point.clone();
+            pos.y = BD[dragging].g[1] / 2;
+          } else {
+            pos = new THREE.Vector3(
+              blocks.length * 2.8 - 6,
+              BD[dragging].g[1] / 2,
+              0,
+            );
+          }
+          place(dragging, pos);
         }
-        place(dragging, pos);
+        dragging = null;
       });
 
       // Camera
