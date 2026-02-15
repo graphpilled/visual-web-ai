@@ -733,7 +733,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       log(`  Efficiency:       ${(avgBw / 15 * 100).toFixed(1)}%`);
       
       // Identify hotspots
-      log('\n🔥 HOTSPOTS (where to optimize):', 'hot');
+      log('\n HOTSPOTS (where to optimize):', 'hot');
       const sorted = [...results].sort((a, b) => (b.perLayer || 0) - (a.perLayer || 0));
       for (let i = 0; i < 5; i++) {
         const r = sorted[i];

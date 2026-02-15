@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>💾 KV Cache Test</h1>
+  <h1> KV Cache Test</h1>
   <p>Tests KV Cache for Qwen2.5 autoregressive generation.</p>
   <button onclick="runTests()">Run All Tests</button>
   <pre id="output"></pre>
@@ -68,7 +68,7 @@
           maxStorageBufferBindingSize: 512 * 1024 * 1024,
         }
       });
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -111,7 +111,7 @@
         const memoryMB = kvCache.getMemoryUsage() / 1024 / 1024;
         log(`  Memory allocated: ${memoryMB.toFixed(1)} MB`);
         log(`  Initial seq_len: ${kvCache.getSeqLen()}`);
-        log(`  ✅ KV Cache initialized`, 'pass');
+        log(`   KV Cache initialized`, 'pass');
         
         // Test 2: Append single K/V
         log('\n--- Test 2: Append Single K/V ---', 'header');
@@ -143,8 +143,8 @@
           if (Math.abs(vData[i] - testV[i]) > 1e-6) vMatch = false;
         }
         
-        log(`  K data match: ${kMatch ? '✅' : '❌'}`, kMatch ? 'pass' : 'fail');
-        log(`  V data match: ${vMatch ? '✅' : '❌'}`, vMatch ? 'pass' : 'fail');
+        log(`  K data match: ${kMatch ? '' : ''}`, kMatch ? 'pass' : 'fail');
+        log(`  V data match: ${vMatch ? '' : ''}`, vMatch ? 'pass' : 'fail');
         
         // Test 3: Append multiple tokens
         log('\n--- Test 3: Append Multiple Tokens ---', 'header');
@@ -172,7 +172,7 @@
         
         const lastMatch = Math.abs(lastK - expectedLastK) < 1e-5;
         log(`  Last token K[0]: ${lastK.toFixed(4)} (expected: ${expectedLastK.toFixed(4)})`);
-        log(`  ${lastMatch ? '✅ PASS' : '❌ FAIL'}`, lastMatch ? 'pass' : 'fail');
+        log(`  ${lastMatch ? ' PASS' : ' FAIL'}`, lastMatch ? 'pass' : 'fail');
         
         // Test 4: Multi-layer append
         log('\n--- Test 4: Multi-Layer Append ---', 'header');
@@ -204,7 +204,7 @@
           Math.abs(layer14K[0] - 14.1) < 0.01 &&
           Math.abs(layer27K[0] - 27.1) < 0.01;
         
-        log(`  ${multiLayerMatch ? '✅ PASS' : '❌ FAIL'}`, multiLayerMatch ? 'pass' : 'fail');
+        log(`  ${multiLayerMatch ? ' PASS' : ' FAIL'}`, multiLayerMatch ? 'pass' : 'fail');
         
         // Test 5: Sequence length buffer
         log('\n--- Test 5: Sequence Length Buffer ---', 'header');
@@ -232,7 +232,7 @@
         seqLenRead.destroy();
         
         log(`  seq_len buffer value: ${seqLenValue} (expected: 5)`);
-        log(`  ${seqLenValue === 5 ? '✅ PASS' : '❌ FAIL'}`, seqLenValue === 5 ? 'pass' : 'fail');
+        log(`  ${seqLenValue === 5 ? ' PASS' : ' FAIL'}`, seqLenValue === 5 ? 'pass' : 'fail');
         
         // Test 6: Memory estimate
         log('\n--- Test 6: Memory Analysis ---', 'header');
@@ -247,10 +247,10 @@
         // Cleanup
         kvCache.destroy();
         
-        log('\n✅ All tests complete!', 'pass');
+        log('\n All tests complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

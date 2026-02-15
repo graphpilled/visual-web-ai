@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>🚀 LM Head V2 Test</h1>
+  <h1> LM Head V2 Test</h1>
   <p>GPU-based argmax - no chunking overhead!</p>
   <button onclick="runTests()">Run All Tests</button>
   <button onclick="runBenchmark()">Benchmark All Versions</button>
@@ -90,7 +90,7 @@
           maxStorageBufferBindingSize: 2 * 1024 * 1024 * 1024,
         }
       });
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -141,7 +141,7 @@
         const expectedMax = vocabSize - 1;
         const isCorrect = result.index === expectedMax;
         log(`  Expected max at: ${expectedMax}`);
-        log(`  ${isCorrect ? '✅ PASS' : '❌ FAIL'}`, isCorrect ? 'pass' : 'fail');
+        log(`  ${isCorrect ? ' PASS' : ' FAIL'}`, isCorrect ? 'pass' : 'fail');
         
         // Compare with original
         log('\n--- Test 2: Verify Against Original ---', 'header');
@@ -181,7 +181,7 @@
         log(`  V2 argmax: index=${result.index}, value=${result.value.toFixed(4)}`);
         
         const matchesOriginal = result.index === cpuMaxIdx;
-        log(`  ${matchesOriginal ? '✅ PASS' : '❌ FAIL'}`, matchesOriginal ? 'pass' : 'fail');
+        log(`  ${matchesOriginal ? ' PASS' : ' FAIL'}`, matchesOriginal ? 'pass' : 'fail');
         
         // Test V3 (top-k)
         log('\n--- Test 3: LM Head V3 Top-K ---', 'header');
@@ -208,9 +208,9 @@
         // Verify top-1 matches argmax
         const top1Matches = topKResult.indices[0] === result.index;
         
-        log(`  Values descending: ${isOrdered ? '✅' : '❌'}`);
-        log(`  Top-1 matches argmax: ${top1Matches ? '✅' : '❌'}`);
-        log(`  ${isOrdered && top1Matches ? '✅ PASS' : '❌ FAIL'}`, isOrdered && top1Matches ? 'pass' : 'fail');
+        log(`  Values descending: ${isOrdered ? '' : ''}`);
+        log(`  Top-1 matches argmax: ${top1Matches ? '' : ''}`);
+        log(`  ${isOrdered && top1Matches ? ' PASS' : ' FAIL'}`, isOrdered && top1Matches ? 'pass' : 'fail');
         
         // Cleanup
         lmHeadV2.destroy();
@@ -219,10 +219,10 @@
         hiddenBuffer.destroy();
         weightBuffer.destroy();
         
-        log('\n✅ All tests complete!', 'pass');
+        log('\n All tests complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -322,7 +322,7 @@
         log(`  V3 Top-50: ${v3Time.toFixed(2)} ms (${(originalTime / v3Time).toFixed(2)}x ${v3Time < originalTime ? 'faster' : 'slower'})`, v3Time < originalTime ? 'pass' : 'info');
         
         // Estimate for Qwen
-        log(`\n📊 Qwen2.5 Estimate (vocab=${QWEN_VOCAB_SIZE}):`, 'info');
+        log(`\n Qwen2.5 Estimate (vocab=${QWEN_VOCAB_SIZE}):`, 'info');
         const scale = QWEN_VOCAB_SIZE / vocabSize;
         log(`  Original: ~${(originalTime * scale).toFixed(1)} ms`);
         log(`  V2 Argmax: ~${(v2Time * scale).toFixed(1)} ms`);
@@ -334,10 +334,10 @@
         hiddenBuffer.destroy();
         weightBuffer.destroy();
         
-        log('\n✅ Benchmark complete!', 'pass');
+        log('\n Benchmark complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

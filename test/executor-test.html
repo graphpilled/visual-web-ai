@@ -23,7 +23,7 @@
         // Initialize runtime
         const runtime = new GPURuntime();
         await runtime.init();
-        log('✓ Runtime initialized\n');
+        log(' Runtime initialized\n');
 
         // =====================
         // Test 1: Simple ReLU
@@ -44,7 +44,7 @@
         const pass1 = expected1.every((v, i) => Math.abs(output1[i] - v) < 0.001);
         log(`  Input:  [${input1}]`);
         log(`  Output: [${Array.from(output1)}]`);
-        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass1 ? 'PASS ' : 'FAIL '}`);
         executor1.destroy();
 
         // =====================
@@ -70,7 +70,7 @@
         log(`  Input:  [${input2}]`);
         log(`  After ReLU → Sigmoid: [${Array.from(output2).map(x => x.toFixed(3))}]`);
         log(`  Expected: [${expected2}]`);
-        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass2 ? 'PASS ' : 'FAIL '}`);
         executor2.destroy();
 
         // =====================
@@ -95,7 +95,7 @@
         log(`  Input A: [${inputA}]`);
         log(`  Input B: [${inputB}]`);
         log(`  Output:  [${Array.from(output3)}]`);
-        log(`  ${pass3 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass3 ? 'PASS ' : 'FAIL '}`);
         executor3.destroy();
 
         // =====================
@@ -124,7 +124,7 @@
         log(`  B: [[1,2], [3,4], [5,6]]`);
         log(`  Output: [${Array.from(output4)}]`);
         log(`  Expected: [${expected4}]`);
-        log(`  ${pass4 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass4 ? 'PASS ' : 'FAIL '}`);
         executor4.destroy();
 
         // =====================
@@ -154,7 +154,7 @@
         log(`  b = [${inB}]`);
         log(`  c = [${inC}]`);
         log(`  (a + b) * c = [${Array.from(output5)}]`);
-        log(`  ${pass5 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass5 ? 'PASS ' : 'FAIL '}`);
         executor5.destroy();
 
         // =====================
@@ -187,14 +187,14 @@
         const pass6 = out6a.every(v => v === 0) && 
                       out6b.every((v, i) => v === in6b[i]) &&
                       out6c[0] === 0 && out6c[1] === 6 && out6c[2] === 0 && out6c[3] === 8;
-        log(`  ${pass6 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass6 ? 'PASS ' : 'FAIL '}`);
         executor6.destroy();
 
         runtime.destroy();
         log('\n=== All Executor Tests Completed ===');
 
       } catch (e) {
-        log('✗ Error: ' + e.message);
+        log(' Error: ' + e.message);
         console.error(e);
       }
     }

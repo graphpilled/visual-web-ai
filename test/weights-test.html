@@ -22,7 +22,7 @@
 
         const runtime = new GPURuntime();
         await runtime.init();
-        log('✓ Runtime initialized\n');
+        log(' Runtime initialized\n');
 
         // =====================
         // Test 1: Constant tensor
@@ -50,7 +50,7 @@
         log(`  Input: [${input1}]`);
         log(`  Constant: [1,2,3,4]`);
         log(`  Output: [${Array.from(output1)}]`);
-        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass1 ? 'PASS ' : 'FAIL '}`);
         executor1.destroy();
 
         // =====================
@@ -80,7 +80,7 @@
         log(`  Input: [${input2}]`);
         log(`  Weight (scale): [2,2,2,2]`);
         log(`  Output: [${Array.from(output2)}]`);
-        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass2 ? 'PASS ' : 'FAIL '}`);
         executor2.destroy();
 
         // =====================
@@ -117,7 +117,7 @@
         log(`  Input: [[1, 2]]`);
         log(`  Output: [${Array.from(output3).map(x => x.toFixed(2))}]`);
         log(`  Expected: [${expected3}]`);
-        log(`  ${pass3 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass3 ? 'PASS ' : 'FAIL '}`);
         executor3.destroy();
 
         // =====================
@@ -154,7 +154,7 @@
         const sigmoidExpected = [0.269, 0.5, 0.731, 0.881];
         const sigmoidPass = sigmoidExpected.every((v, i) => Math.abs(outputs4[1][i] - v) < 0.01);
         
-        log(`  ${reluPass && sigmoidPass ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${reluPass && sigmoidPass ? 'PASS ' : 'FAIL '}`);
         executor4.destroy();
 
         // =====================
@@ -203,14 +203,14 @@
         // Check that softmax sums to 1
         const sum5 = output5[0] + output5[1];
         const pass5 = Math.abs(sum5 - 1.0) < 0.01;
-        log(`  Sum: ${sum5.toFixed(4)} ${pass5 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  Sum: ${sum5.toFixed(4)} ${pass5 ? 'PASS ' : 'FAIL '}`);
         executor5.destroy();
 
         runtime.destroy();
         log('\n=== All Weight Tests Completed ===');
 
       } catch (e) {
-        log('✗ Error: ' + e.message);
+        log(' Error: ' + e.message);
         console.error(e);
       }
     }

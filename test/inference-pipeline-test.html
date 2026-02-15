@@ -822,14 +822,14 @@ fn main() {
       log('Initializing inference engine...', 'info');
       const llm = new LLMInference(device, config);
       await llm.initialize();
-      log('✓ Initialized\n', 'pass');
+      log(' Initialized\n', 'pass');
       
       log('Warming up...', 'info');
       for (let i = 0; i < 5; i++) {
         await llm.generate(i % config.vocab_size);
       }
       llm.reset();
-      log('✓ Warmup complete\n', 'pass');
+      log(' Warmup complete\n', 'pass');
       
       log('--- Generating Tokens ---\n', 'header');
       

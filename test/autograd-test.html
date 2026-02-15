@@ -34,7 +34,7 @@
       
       const runtime = new GPURuntime();
       await runtime.init();
-      log('✓ Runtime initialized\n');
+      log(' Runtime initialized\n');
 
       // Test 1: ReLU backward
       log('Test 1: ReLU backward');
@@ -58,9 +58,9 @@
         
         const expected = [0, 0, 1, 1];
         const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
-        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+        log(`  ${pass ? 'PASS ' : 'FAIL '}\n`, pass);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -88,9 +88,9 @@
         log(`  Expected: [${Array.from(expected).map(x => x.toFixed(4))}]`);
         
         const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
-        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+        log(`  ${pass ? 'PASS ' : 'FAIL '}\n`, pass);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -118,9 +118,9 @@
         log(`  Expected: [${Array.from(expected).map(x => x.toFixed(4))}]`);
         
         const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
-        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+        log(`  ${pass ? 'PASS ' : 'FAIL '}\n`, pass);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -145,9 +145,9 @@
         log(`  Expected: [${Array.from(inputs.out).map(x => x.toFixed(3))}]`);
         
         const pass = inputs.out.every((v, i) => Math.abs(result[i] - v) < 0.01);
-        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+        log(`  ${pass ? 'PASS ' : 'FAIL '}\n`, pass);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -177,9 +177,9 @@
         const passA = expectedGradA.every((v, i) => Math.abs(results.grad_a[i] - v) < 0.01);
         const passB = expectedGradB.every((v, i) => Math.abs(results.grad_b[i] - v) < 0.01);
         
-        log(`  ${passA && passB ? 'PASS ✓' : 'FAIL ✗'}\n`, passA && passB);
+        log(`  ${passA && passB ? 'PASS ' : 'FAIL '}\n`, passA && passB);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -203,9 +203,9 @@
         const passA = inputs.grad_out.every((v, i) => Math.abs(results.grad_a[i] - v) < 0.01);
         const passB = inputs.grad_out.every((v, i) => Math.abs(results.grad_b[i] - v) < 0.01);
         
-        log(`  ${passA && passB ? 'PASS ✓' : 'FAIL ✗'}\n`, passA && passB);
+        log(`  ${passA && passB ? 'PASS ' : 'FAIL '}\n`, passA && passB);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -233,9 +233,9 @@
         const expected = [1, 3, 5, 2, 4, 6];
         const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
         
-        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+        log(`  ${pass ? 'PASS ' : 'FAIL '}\n`, pass);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -263,9 +263,9 @@
         log(`  Expected: [${Array.from(expected).map(x => x.toFixed(2))}]`);
         
         const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
-        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+        log(`  ${pass ? 'PASS ' : 'FAIL '}\n`, pass);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -298,9 +298,9 @@
         const passM = mExpected.every((v, i) => Math.abs(results.m[i] - v) < 0.001);
         const passV = vExpected.every((v, i) => Math.abs(results.v[i] - v) < 0.0001);
         
-        log(`  Moments updated correctly: ${passM && passV ? 'PASS ✓' : 'FAIL ✗'}\n`, passM && passV);
+        log(`  Moments updated correctly: ${passM && passV ? 'PASS ' : 'FAIL '}\n`, passM && passV);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -333,9 +333,9 @@
         
         log(`  Row sums (should be ~0): ${row1Sum.toFixed(6)}, ${row2Sum.toFixed(6)}`);
         const pass = Math.abs(row1Sum) < 0.01 && Math.abs(row2Sum) < 0.01;
-        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+        log(`  ${pass ? 'PASS ' : 'FAIL '}\n`, pass);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 
@@ -363,9 +363,9 @@
         log(`  Expected: [${Array.from(expected).map(x => x.toFixed(4))}]`);
         
         const pass = expected.every((v, i) => Math.abs(result[i] - v) < 0.01);
-        log(`  ${pass ? 'PASS ✓' : 'FAIL ✗'}\n`, pass);
+        log(`  ${pass ? 'PASS ' : 'FAIL '}\n`, pass);
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`, false);
+        log(`  FAIL : ${e.message}\n`, false);
         console.error(e);
       }
 

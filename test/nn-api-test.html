@@ -40,13 +40,13 @@
       log(`\na + b = [${Array.from(sum._data)}]`);
       const expectedSum = [6, 8, 10, 12];
       const sumPass = expectedSum.every((v, i) => Math.abs(sum._data[i] - v) < 0.01);
-      log(`  Expected: [${expectedSum}] ${sumPass ? '✓' : '✗'}`, sumPass ? 'pass' : 'fail');
+      log(`  Expected: [${expectedSum}] ${sumPass ? '' : ''}`, sumPass ? 'pass' : 'fail');
       
       const prod = await a.mul(b);
       log(`\na * b = [${Array.from(prod._data)}]`);
       const expectedProd = [5, 12, 21, 32];
       const prodPass = expectedProd.every((v, i) => Math.abs(prod._data[i] - v) < 0.01);
-      log(`  Expected: [${expectedProd}] ${prodPass ? '✓' : '✗'}`, prodPass ? 'pass' : 'fail');
+      log(`  Expected: [${expectedProd}] ${prodPass ? '' : ''}`, prodPass ? 'pass' : 'fail');
       
       // Test activations
       const x = Tensor.from([-1, 0, 1, 2], [4]);
@@ -54,13 +54,13 @@
       log(`\nReLU([-1, 0, 1, 2]) = [${Array.from(reluResult._data)}]`);
       const expectedRelu = [0, 0, 1, 2];
       const reluPass = expectedRelu.every((v, i) => Math.abs(reluResult._data[i] - v) < 0.01);
-      log(`  Expected: [${expectedRelu}] ${reluPass ? '✓' : '✗'}`, reluPass ? 'pass' : 'fail');
+      log(`  Expected: [${expectedRelu}] ${reluPass ? '' : ''}`, reluPass ? 'pass' : 'fail');
       
       const sigmoidResult = await x.sigmoid();
       log(`\nSigmoid([-1, 0, 1, 2]) = [${Array.from(sigmoidResult._data).map(v => v.toFixed(3))}]`);
       const expectedSigmoid = [0.269, 0.5, 0.731, 0.881];
       const sigPass = expectedSigmoid.every((v, i) => Math.abs(sigmoidResult._data[i] - v) < 0.01);
-      log(`  Expected: [${expectedSigmoid}] ${sigPass ? '✓' : '✗'}`, sigPass ? 'pass' : 'fail');
+      log(`  Expected: [${expectedSigmoid}] ${sigPass ? '' : ''}`, sigPass ? 'pass' : 'fail');
       
       // Test matmul
       const A = Tensor.from([1, 2, 3, 4, 5, 6], [2, 3]);
@@ -70,22 +70,22 @@
       // [[1,2,3], [4,5,6]] @ [[1,2], [3,4], [5,6]] = [[22,28], [49,64]]
       const expectedMatmul = [22, 28, 49, 64];
       const matmulPass = expectedMatmul.every((v, i) => Math.abs(C._data[i] - v) < 0.01);
-      log(`  Expected: [${expectedMatmul}] ${matmulPass ? '✓' : '✗'}`, matmulPass ? 'pass' : 'fail');
+      log(`  Expected: [${expectedMatmul}] ${matmulPass ? '' : ''}`, matmulPass ? 'pass' : 'fail');
       
       // Test reductions
       const t = Tensor.from([1, 2, 3, 4], [2, 2]);
       const sumAll = await t.sum();
       log(`\nSum([[1,2], [3,4]]) = ${sumAll._data[0]}`);
       const sumAllPass = Math.abs(sumAll._data[0] - 10) < 0.01;
-      log(`  Expected: 10 ${sumAllPass ? '✓' : '✗'}`, sumAllPass ? 'pass' : 'fail');
+      log(`  Expected: 10 ${sumAllPass ? '' : ''}`, sumAllPass ? 'pass' : 'fail');
       
       const meanAll = await t.mean();
       log(`Mean([[1,2], [3,4]]) = ${meanAll._data[0]}`);
       const meanAllPass = Math.abs(meanAll._data[0] - 2.5) < 0.01;
-      log(`  Expected: 2.5 ${meanAllPass ? '✓' : '✗'}`, meanAllPass ? 'pass' : 'fail');
+      log(`  Expected: 2.5 ${meanAllPass ? '' : ''}`, meanAllPass ? 'pass' : 'fail');
       
       const allPass = sumPass && prodPass && reluPass && sigPass && matmulPass && sumAllPass && meanAllPass;
-      log(`\n${allPass ? 'All tensor ops PASS ✓' : 'Some tests FAILED ✗'}`, allPass ? 'pass' : 'fail');
+      log(`\n${allPass ? 'All tensor ops PASS ' : 'Some tests FAILED '}`, allPass ? 'pass' : 'fail');
       
       return allPass;
     }
@@ -152,7 +152,7 @@
       const bPass = Math.abs(b._data[0] - 1.0) < 0.1;
       
       log(`\nFinal: W = ${W._data[0].toFixed(4)} (target: 2.0), b = ${b._data[0].toFixed(4)} (target: 1.0)`);
-      log(`${wPass && bPass ? 'Linear regression PASS ✓' : 'FAILED ✗'}`, wPass && bPass ? 'pass' : 'fail');
+      log(`${wPass && bPass ? 'Linear regression PASS ' : 'FAILED '}`, wPass && bPass ? 'pass' : 'fail');
       
       return wPass && bPass;
     }
@@ -267,12 +267,12 @@
         const pred = out > 0.5 ? 1 : 0;
         
         if (pred === y) correct++;
-        log(`  [${x}] -> ${out.toFixed(4)} (pred: ${pred}, target: ${y}) ${pred === y ? '✓' : '✗'}`, pred === y ? 'pass' : 'fail');
+        log(`  [${x}] -> ${out.toFixed(4)} (pred: ${pred}, target: ${y}) ${pred === y ? '' : ''}`, pred === y ? 'pass' : 'fail');
       }
       
       const accuracy = correct / inputs.length;
       log(`\nAccuracy: ${correct}/${inputs.length} = ${(accuracy * 100).toFixed(0)}%`);
-      log(`${accuracy === 1 ? 'XOR PASS ✓' : 'XOR FAILED ✗'}`, accuracy === 1 ? 'pass' : 'fail');
+      log(`${accuracy === 1 ? 'XOR PASS ' : 'XOR FAILED '}`, accuracy === 1 ? 'pass' : 'fail');
       
       return accuracy === 1;
     }
@@ -282,19 +282,19 @@
       
       try {
         await init();
-        log('✓ Runtime initialized\n');
+        log(' Runtime initialized\n');
         
         const test1 = await testTensorOps();
         const test2 = await testLinearRegression();
         const test3 = await testXORWithOptimizer();
         
         log('\n\n=== Summary ===');
-        log(`Test 1 (Tensor Ops): ${test1 ? 'PASS ✓' : 'FAIL ✗'}`, test1 ? 'pass' : 'fail');
-        log(`Test 2 (Linear Regression): ${test2 ? 'PASS ✓' : 'FAIL ✗'}`, test2 ? 'pass' : 'fail');
-        log(`Test 3 (XOR + Adam): ${test3 ? 'PASS ✓' : 'FAIL ✗'}`, test3 ? 'pass' : 'fail');
+        log(`Test 1 (Tensor Ops): ${test1 ? 'PASS ' : 'FAIL '}`, test1 ? 'pass' : 'fail');
+        log(`Test 2 (Linear Regression): ${test2 ? 'PASS ' : 'FAIL '}`, test2 ? 'pass' : 'fail');
+        log(`Test 3 (XOR + Adam): ${test3 ? 'PASS ' : 'FAIL '}`, test3 ? 'pass' : 'fail');
         
         const allPass = test1 && test2 && test3;
-        log(`\n${allPass ? 'ALL TESTS PASSED ✓' : 'SOME TESTS FAILED ✗'}`, allPass ? 'pass' : 'fail');
+        log(`\n${allPass ? 'ALL TESTS PASSED ' : 'SOME TESTS FAILED '}`, allPass ? 'pass' : 'fail');
         
       } catch (e) {
         log(`\nError: ${e.message}`, 'fail');

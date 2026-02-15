@@ -13,7 +13,7 @@
   </style>
 </head>
 <body>
-  <h1>🔬 INT4 - Variance Analysis & Final Push</h1>
+  <h1> INT4 - Variance Analysis & Final Push</h1>
   <pre id="output"></pre>
   <script type="module">
     const log = (msg, cls = '') => {
@@ -116,7 +116,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     async function benchmark() {
-      log('=== 🔬 Variance Analysis & Final Push ===\n', 'header');
+      log('===  Variance Analysis & Final Push ===\n', 'header');
       
       const adapter = await navigator.gpu.requestAdapter();
       const device = await adapter.requestDevice({
@@ -327,7 +327,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       log(`  32 layers: ${(perLayerMin * 32).toFixed(0)}ms`);
       log(`  + other:   ${otherOps.toFixed(0)}ms`);
       log(`  Total:     ${totalMin.toFixed(0)}ms`);
-      log(`  🏆 BEST:   ${(1000 / totalMin).toFixed(2)} tok/s`, 'gold');
+      log(`   BEST:   ${(1000 / totalMin).toFixed(2)} tok/s`, 'gold');
       
       log(`\nUsing AVERAGE times:`);
       log(`  Per layer: ${perLayerAvg.toFixed(2)}ms`);

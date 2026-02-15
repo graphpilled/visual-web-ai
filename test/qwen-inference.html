@@ -229,12 +229,12 @@
   </style>
 </head>
 <body>
-  <h1>🤖 Qwen2.5-7B-Instruct WebGPU</h1>
+  <h1> Qwen2.5-7B-Instruct WebGPU</h1>
   <p class="subtitle">INT4 GPTQ inference running entirely in your browser</p>
   
   <!-- Model Loading Section -->
   <div class="section">
-    <h2>📦 Model Loading</h2>
+    <h2> Model Loading</h2>
     <div style="margin-bottom: 15px;">
       <label style="display: block; margin-bottom: 5px; color: #94a3b8;">Base Model (select all files from model folder):</label>
       <input type="file" id="modelFiles" multiple webkitdirectory style="background: #334155; border: 1px solid #475569; border-radius: 6px; padding: 8px; color: #e2e8f0; width: 100%;" />
@@ -258,7 +258,7 @@
   
   <!-- Chat Section -->
   <div class="section">
-    <h2>💬 Chat</h2>
+    <h2> Chat</h2>
     <div class="chat-container">
       <div class="chat-messages" id="chatMessages">
         <div style="color: #64748b; text-align: center; padding: 40px;">
@@ -294,7 +294,7 @@
   
   <!-- Settings Section -->
   <div class="section">
-    <h2>⚙️ Generation Settings</h2>
+    <h2>️ Generation Settings</h2>
     <div class="settings">
       <div class="setting">
         <label>Temperature: <span class="setting-value" id="tempValue">0.7</span></label>
@@ -332,7 +332,7 @@
   
   <!-- Debug Log -->
   <div class="section">
-    <h2>📋 Debug Log</h2>
+    <h2> Debug Log</h2>
     <pre class="log" id="debugLog"></pre>
   </div>
 
@@ -518,7 +518,7 @@
         const mergesText = await mergesFile.text();
         
         await tokenizer.loadFromFiles(vocabText, mergesText);
-        loadLog(`✅ Tokenizer loaded: ${Object.keys(tokenizer.vocab).length} tokens`);
+        loadLog(` Tokenizer loaded: ${Object.keys(tokenizer.vocab).length} tokens`);
         
         // 3. Find and load model weights (.safetensors files)
         setProgress(15, 'Parsing model files...');
@@ -540,7 +540,7 @@
         const startLoad = performance.now();
         modelBuffers = await loader.loadToGPU(device);
         const loadTime = ((performance.now() - startLoad) / 1000).toFixed(1);
-        loadLog(`✅ Weights loaded in ${loadTime}s`);
+        loadLog(` Weights loaded in ${loadTime}s`);
         
         // 4. Initialize components
         setProgress(90, 'Initializing inference components...');
@@ -549,7 +549,7 @@
         embeddingLookup = new EmbeddingLookup(device, CONFIG.vocab_size, CONFIG.hidden_size);
         embeddingLookup.setEmbeddingBuffer(modelBuffers.embed_tokens);
         await embeddingLookup.init();
-        loadLog('✅ Embedding lookup initialized');
+        loadLog(' Embedding lookup initialized');
         
         // KV Cache
         kvCache = new KVCache(device, {
@@ -558,7 +558,7 @@
           headDim: CONFIG.head_dim,
           maxSeqLen: 2048
         });
-        loadLog('✅ KV Cache initialized');
+        loadLog(' KV Cache initialized');
         
         // GPU Sampler
         sampler = new GPUSampler(device, CONFIG.vocab_size, {
@@ -569,34 +569,34 @@
           seed: Date.now()
         });
         await sampler.init();
-        loadLog('✅ GPU Sampler initialized');
+        loadLog(' GPU Sampler initialized');
         
         // LM Head
         lmHead = new LMHead(device, CONFIG.vocab_size, CONFIG.hidden_size);
         lmHead.setWeightBuffer(modelBuffers.lm_head);
         await lmHead.init();
-        loadLog('✅ LM Head initialized');
+        loadLog(' LM Head initialized');
         
         // 5. Initialize compute pipelines for transformer layers
         setProgress(95, 'Creating compute pipelines...');
         await initComputePipelines();
-        loadLog('✅ Compute pipelines created');
+        loadLog(' Compute pipelines created');
         
         // 6. Pre-create bind groups for all layers (optimization)
         createLayerBindGroups();
-        loadLog('✅ Bind groups pre-created');
+        loadLog(' Bind groups pre-created');
         
         // 7. Pre-create LM Head bind group
         lmHead.createBindGroup(workBuffers.normed);
-        loadLog('✅ LM Head bind group created');
+        loadLog(' LM Head bind group created');
         
         // 8. Pre-create Embedding bind group
         embeddingLookup.createBindGroup(workBuffers.hidden);
-        loadLog('✅ Embedding bind group created');
+        loadLog(' Embedding bind group created');
         
         // 9. Pre-create Greedy sampler bind group
         sampler.createGreedyBindGroup(lmHead.getLogitsBuffer());
-        loadLog('✅ Greedy sampler bind group created');
+        loadLog(' Greedy sampler bind group created');
         
         // 10. Load LoRA adapter if files provided
         if (loraFiles.length > 0) {
@@ -637,9 +637,9 @@
             loraApplicator = new LoRAApplicator(device, loraGPUWeights, CONFIG);
             await loraApplicator.init();
             
-            loadLog('✅ LoRA adapter loaded and ready');
+            loadLog(' LoRA adapter loaded and ready');
           } catch (err) {
-            loadLog(`⚠️ LoRA loading failed: ${err.message}`);
+            loadLog(`️ LoRA loading failed: ${err.message}`);
             console.error(err);
             loraApplicator = null;
           }
@@ -651,9 +651,9 @@
         try {
           specOrchestrator = new SpeculativeOrchestrator(device, CONFIG, null);
           await specOrchestrator.initDraftModel(DRAFT_MODEL_URL, loadLog);
-          loadLog('✅ Speculative decoding enabled (draft model loaded)');
+          loadLog(' Speculative decoding enabled (draft model loaded)');
         } catch (err) {
-          loadLog(`⚠️ Speculative decoding disabled: ${err.message}`);
+          loadLog(`️ Speculative decoding disabled: ${err.message}`);
           specOrchestrator = null;
         }
         

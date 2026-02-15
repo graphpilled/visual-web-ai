@@ -34,8 +34,8 @@ function bytesToUnicode() {
   const bs = [];
   // Printable ASCII
   for (let i = 33; i <= 126; i++) bs.push(i);    // ! to ~
-  for (let i = 161; i <= 172; i++) bs.push(i);   // ¡ to ¬
-  for (let i = 174; i <= 255; i++) bs.push(i);   // ® to ÿ
+  for (let i = 161; i <= 172; i++) bs.push(i);   //  to 
+  for (let i = 174; i <= 255; i++) bs.push(i);   //  to ÿ
   
   const cs = [...bs];
   let n = 0;

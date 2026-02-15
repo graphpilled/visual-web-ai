@@ -22,7 +22,7 @@
 
         const runtime = new GPURuntime();
         await runtime.init();
-        log('✓ Runtime initialized\n');
+        log(' Runtime initialized\n');
 
         // =====================
         // Test 1: Scaled Dot-Product Attention
@@ -67,7 +67,7 @@
         log(`  Output: [${Array.from(output1).map(x => x.toFixed(3)).join(', ')}]`);
         
         // With Q=K as one-hot, attention should mostly focus on matching positions
-        log('  PASS ✓ (attention computed)');
+        log('  PASS  (attention computed)');
         executor1.destroy();
 
         // =====================
@@ -98,7 +98,7 @@
         const output2 = await executor2.execute(input2);
         log(`  Input: [1, 1, 1, 1]`);
         log(`  Output: [${Array.from(output2).map(x => x.toFixed(4)).join(', ')}]`);
-        log('  PASS ✓');
+        log('  PASS ');
         executor2.destroy();
 
         // =====================
@@ -132,7 +132,7 @@
         // Check that output has mean ≈ 0
         const mean3 = output3.reduce((a, b) => a + b, 0) / 4;
         log(`  Output mean: ${mean3.toFixed(6)} (should be ≈ 0)`);
-        log('  PASS ✓');
+        log('  PASS ');
         executor3.destroy();
 
         // =====================
@@ -161,7 +161,7 @@
             .map(x => x < -1e8 ? '-inf' : x.toFixed(0).padStart(4));
           log(`    [${row.join(', ')}]`);
         }
-        log('  PASS ✓');
+        log('  PASS ');
         executor4.destroy();
 
         // =====================
@@ -200,7 +200,7 @@
         log(`    Token 0: [${Array.from(output5.slice(0, 4)).map(x => x.toFixed(2)).join(', ')}]`);
         log(`    Token 1: [${Array.from(output5.slice(4, 8)).map(x => x.toFixed(2)).join(', ')}]`);
         log(`    Token 2: [${Array.from(output5.slice(8, 12)).map(x => x.toFixed(2)).join(', ')}]`);
-        log('  PASS ✓');
+        log('  PASS ');
         executor5.destroy();
 
         // =====================
@@ -218,13 +218,13 @@
         log(`  Weights: ${compiled6.weightNames.length}`);
         log(`  Weight names: [${compiled6.weightNames.slice(0, 5).join(', ')}...]`);
         log(`  Total buffer size: ${(compiled6.totalBufferSize / 1024).toFixed(2)} KB`);
-        log('  PASS ✓ (transformer block compiled)');
+        log('  PASS  (transformer block compiled)');
 
         runtime.destroy();
         log('\n=== All Transformer Tests Completed ===');
 
       } catch (e) {
-        log('✗ Error: ' + e.message);
+        log(' Error: ' + e.message);
         console.error(e);
       }
     }

@@ -27,7 +27,7 @@
   </style>
 </head>
 <body>
-  <h1>🚀 Qwen2.5 Weight Loader V3</h1>
+  <h1> Qwen2.5 Weight Loader V3</h1>
   <p>Streams weights directly to GPU - minimal CPU memory usage</p>
   
   <div>
@@ -103,7 +103,7 @@
         }
       });
       
-      log(`✅ WebGPU initialized`, 'pass');
+      log(` WebGPU initialized`, 'pass');
       log(`   Max buffer size: ${(gpuDevice.limits.maxBufferSize / 1024 / 1024 / 1024).toFixed(2)} GB`, 'info');
       log(`   Max storage binding: ${(gpuDevice.limits.maxStorageBufferBindingSize / 1024 / 1024).toFixed(0)} MB`, 'info');
       
@@ -115,7 +115,7 @@
       const files = Array.from(document.getElementById('fileInput').files);
       
       if (files.length === 0) {
-        log('❌ Please select safetensors file(s)', 'fail');
+        log(' Please select safetensors file(s)', 'fail');
         return;
       }
       
@@ -134,7 +134,7 @@
         log('\n--- Step 2: Analyze Structure ---\n', 'header');
         const analysis = await loader.analyzeModel();
         
-        log(`\n✅ Model analysis complete:`, 'pass');
+        log(`\n Model analysis complete:`, 'pass');
         log(`   Layers: ${analysis.numLayers}`, 'info');
         log(`   Has embedding: ${analysis.hasEmbed}`, 'info');
         log(`   Has LM head: ${analysis.hasLmHead}`, 'info');
@@ -147,17 +147,17 @@
         log(`\n   Estimated GPU memory: ~${totalEstMB.toFixed(0)} MB`, 'info');
         
         document.getElementById('loadBtn').disabled = false;
-        log('\n✅ Ready to load! Click "Load to GPU"', 'pass');
+        log('\n Ready to load! Click "Load to GPU"', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
     
     async function loadToGPU() {
       if (!loader) {
-        log('❌ Analyze model first', 'fail');
+        log(' Analyze model first', 'fail');
         return;
       }
       
@@ -176,10 +176,10 @@
         log(`\n⏱️ Loading took ${elapsed} seconds`, 'info');
         
         document.getElementById('testBtn').disabled = false;
-        log('\n🎉 Model loaded! Click "Test Inference" to verify', 'pass');
+        log('\n Model loaded! Click "Test Inference" to verify', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
         document.getElementById('loadBtn').disabled = false;
       }
@@ -187,7 +187,7 @@
     
     async function testInference() {
       if (!gpuBuffers) {
-        log('❌ Load model first', 'fail');
+        log(' Load model first', 'fail');
         return;
       }
       
@@ -287,7 +287,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         gpuDevice.queue.submit([encoder.finish()]);
         await gpuDevice.queue.onSubmittedWorkDone();
         
-        log('  ✅ Kernel executed successfully', 'pass');
+        log('   Kernel executed successfully', 'pass');
         
         // Read back results
         const readBuffer = gpuDevice.createBuffer({
@@ -345,10 +345,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         outputBuffer.destroy();
         readBuffer.destroy();
         
-        log('\n🎉 Inference test complete!', 'pass');
+        log('\n Inference test complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

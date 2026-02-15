@@ -137,7 +137,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       
       const adapter = await navigator.gpu.requestAdapter();
       const device = await adapter.requestDevice();
-      log('✓ WebGPU initialized');
+      log(' WebGPU initialized');
       
       // Small test: K=128, N=64 (single group)
       const K = 128, N = 64, groupSize = 128;
@@ -217,9 +217,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       }
       
       if (maxDiff < 0.001) {
-        log(`\n✓ PASS - max diff: ${maxDiff.toExponential(2)}`, 'pass');
+        log(`\n PASS - max diff: ${maxDiff.toExponential(2)}`, 'pass');
       } else {
-        log(`\n✗ FAIL - max diff: ${maxDiff.toExponential(2)}`, 'fail');
+        log(`\n FAIL - max diff: ${maxDiff.toExponential(2)}`, 'fail');
       }
       
       // Test 2: Non-trivial weights
@@ -252,9 +252,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       log(`GPU output (all weights=0): ${gpu2[0].toFixed(6)}`);
       
       if (Math.abs(gpu2[0]) < 0.001) {
-        log('✓ PASS', 'pass');
+        log(' PASS', 'pass');
       } else {
-        log('✗ FAIL', 'fail');
+        log(' FAIL', 'fail');
       }
       
       // Test 3: Positive weights
@@ -289,9 +289,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       
       maxDiff = Math.abs(cpu3[0] - gpu3[0]);
       if (maxDiff < 0.001) {
-        log('✓ PASS', 'pass');
+        log(' PASS', 'pass');
       } else {
-        log(`✗ FAIL - diff: ${maxDiff}`, 'fail');
+        log(` FAIL - diff: ${maxDiff}`, 'fail');
       }
       
       log('\n=== Tests Complete ===');

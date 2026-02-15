@@ -47,7 +47,7 @@
       log(`\nForward: [2, 4] -> [${y.shape}]`);
       
       const pass = y.shape[0] === 2 && y.shape[1] === 3 && params.length === 2;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -81,7 +81,7 @@
       log(`  Output: [${y.toArray().map(v => v.toFixed(3))}]`);
       
       const pass = y.shape[0] === 4 && y.shape[1] === 1 && params.length === 4;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -160,14 +160,14 @@
         const target = Y[i]._data[0];
         
         if (predClass === target) correct++;
-        log(`  [${X[i]._data}] -> ${predVal.toFixed(4)} (pred: ${predClass}, target: ${target}) ${predClass === target ? '✓' : '✗'}`, predClass === target ? 'pass' : 'fail');
+        log(`  [${X[i]._data}] -> ${predVal.toFixed(4)} (pred: ${predClass}, target: ${target}) ${predClass === target ? '' : ''}`, predClass === target ? 'pass' : 'fail');
       }
       
       const accuracy = correct / 4;
       log(`\nAccuracy: ${correct}/4 = ${(accuracy * 100).toFixed(0)}%`);
       
       const pass = accuracy >= 0.75;
-      log(`${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -202,7 +202,7 @@
       log(`  p2.grad: [${Array.from(p2._grad).map(g => g.toFixed(3))}]`);
       
       const pass = Math.abs(actualNormAfter - 10.0) < 0.1;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'} (norm clipped to ~10)`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '} (norm clipped to ~10)`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -250,7 +250,7 @@
         Math.abs(v - model2.layers[0].weight._data[i]) < 0.0001
       );
       
-      log(`\n${match ? 'PASS ✓' : 'FAIL ✗'} (weights match after load)`, match ? 'pass' : 'fail');
+      log(`\n${match ? 'PASS ' : 'FAIL '} (weights match after load)`, match ? 'pass' : 'fail');
       
       return match;
     }
@@ -281,7 +281,7 @@
       log(`Expected: ${expectedParams}, Actual: ${actualParams}`);
       
       const pass = actualParams === expectedParams;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -291,7 +291,7 @@
       
       try {
         await init();
-        log('✓ Runtime initialized\n');
+        log(' Runtime initialized\n');
         
         const test1 = await testModuleBasics();
         const test2 = await testSequential();
@@ -301,18 +301,18 @@
         const test6 = await testModelSummary();
         
         log('\n\n=== Summary ===');
-        log(`Test 1 (Module Basics): ${test1 ? 'PASS ✓' : 'FAIL ✗'}`, test1 ? 'pass' : 'fail');
-        log(`Test 2 (Sequential): ${test2 ? 'PASS ✓' : 'FAIL ✗'}`, test2 ? 'pass' : 'fail');
-        log(`Test 3 (XOR Training): ${test3 ? 'PASS ✓' : 'FAIL ✗'}`, test3 ? 'pass' : 'fail');
-        log(`Test 4 (Grad Clipping): ${test4 ? 'PASS ✓' : 'FAIL ✗'}`, test4 ? 'pass' : 'fail');
-        log(`Test 5 (Save/Load): ${test5 ? 'PASS ✓' : 'FAIL ✗'}`, test5 ? 'pass' : 'fail');
-        log(`Test 6 (Model Summary): ${test6 ? 'PASS ✓' : 'FAIL ✗'}`, test6 ? 'pass' : 'fail');
+        log(`Test 1 (Module Basics): ${test1 ? 'PASS ' : 'FAIL '}`, test1 ? 'pass' : 'fail');
+        log(`Test 2 (Sequential): ${test2 ? 'PASS ' : 'FAIL '}`, test2 ? 'pass' : 'fail');
+        log(`Test 3 (XOR Training): ${test3 ? 'PASS ' : 'FAIL '}`, test3 ? 'pass' : 'fail');
+        log(`Test 4 (Grad Clipping): ${test4 ? 'PASS ' : 'FAIL '}`, test4 ? 'pass' : 'fail');
+        log(`Test 5 (Save/Load): ${test5 ? 'PASS ' : 'FAIL '}`, test5 ? 'pass' : 'fail');
+        log(`Test 6 (Model Summary): ${test6 ? 'PASS ' : 'FAIL '}`, test6 ? 'pass' : 'fail');
         
         const allPass = test1 && test2 && test3 && test4 && test5 && test6;
-        log(`\n${allPass ? 'ALL TESTS PASSED ✓' : 'SOME TESTS FAILED ✗'}`, allPass ? 'pass' : 'fail');
+        log(`\n${allPass ? 'ALL TESTS PASSED ' : 'SOME TESTS FAILED '}`, allPass ? 'pass' : 'fail');
         
         if (allPass) {
-          log('\n🎉 Full PyTorch-like API is working!');
+          log('\n Full PyTorch-like API is working!');
           log('   - nn.Linear, nn.Sequential');
           log('   - model.parameters()');
           log('   - clipGradNorm()');

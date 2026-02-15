@@ -45,7 +45,7 @@
       
       const runtime = new GPURuntime();
       await runtime.init();
-      log('✓ Runtime initialized\n');
+      log(' Runtime initialized\n');
       
       // XOR training data
       const X = [
@@ -185,17 +185,17 @@
         const isCorrect = pred === y;
         if (isCorrect) correct++;
         
-        log(`  [${x}] -> ${out.toFixed(4)} (pred: ${pred}, target: ${y}) ${isCorrect ? '✓' : '✗'}`, isCorrect ? 'pass' : 'fail');
+        log(`  [${x}] -> ${out.toFixed(4)} (pred: ${pred}, target: ${y}) ${isCorrect ? '' : ''}`, isCorrect ? 'pass' : 'fail');
       }
       
       log(`\nAccuracy: ${correct}/${X.length} = ${(100 * correct / X.length).toFixed(0)}%`);
-      log(correct === X.length ? '\nPASS ✓ - XOR learned successfully!' : '\nFAIL ✗', correct === X.length ? 'pass' : 'fail');
+      log(correct === X.length ? '\nPASS  - XOR learned successfully!' : '\nFAIL ', correct === X.length ? 'pass' : 'fail');
       
       // Now verify GPU backward kernels match CPU
       log('\n\n=== GPU Backward Kernel Verification ===\n');
       
       // Test Tanh backward
-      log('Test: Tanh backward (d/dx tanh = 1 - tanh²)');
+      log('Test: Tanh backward (d/dx tanh = 1 - tanh)');
       const tanhKernel = Autograd.genTanhBackwardKernel(4);
       const tanhOut = new Float32Array([0, 0.5, 0.76, -0.76]);
       const tanhGradOut = new Float32Array([1, 1, 1, 1]);
@@ -211,7 +211,7 @@
       log(`  Expected: [${Array.from(expectedTanhGrad).map(x => x.toFixed(4))}]`);
       
       const tanhPass = Array.from(tanhResult).every((v, i) => Math.abs(v - expectedTanhGrad[i]) < 0.01);
-      log(`  ${tanhPass ? 'PASS ✓' : 'FAIL ✗'}`, tanhPass ? 'pass' : 'fail');
+      log(`  ${tanhPass ? 'PASS ' : 'FAIL '}`, tanhPass ? 'pass' : 'fail');
       
       // Test Sigmoid backward
       log('\nTest: Sigmoid backward (d/dx sigmoid = sigmoid * (1 - sigmoid))');
@@ -230,7 +230,7 @@
       log(`  Expected: [${Array.from(expectedSigGrad).map(x => x.toFixed(4))}]`);
       
       const sigPass = Array.from(sigResult).every((v, i) => Math.abs(v - expectedSigGrad[i]) < 0.01);
-      log(`  ${sigPass ? 'PASS ✓' : 'FAIL ✗'}`, sigPass ? 'pass' : 'fail');
+      log(`  ${sigPass ? 'PASS ' : 'FAIL '}`, sigPass ? 'pass' : 'fail');
       
       // Test MatMul backward
       log('\nTest: MatMul backward');
@@ -262,7 +262,7 @@
       const expectedGradA = [1, 3, 5, 2, 4, 6];
       const matmulAPass = Array.from(gradAResult).every((v, i) => Math.abs(v - expectedGradA[i]) < 0.1);
       log(`  Expected dA: [${expectedGradA}]`);
-      log(`  ${matmulAPass ? 'PASS ✓' : 'FAIL ✗'}`, matmulAPass ? 'pass' : 'fail');
+      log(`  ${matmulAPass ? 'PASS ' : 'FAIL '}`, matmulAPass ? 'pass' : 'fail');
       
       runtime.destroy();
       log('\n=== All MLP Training Tests Completed ===');

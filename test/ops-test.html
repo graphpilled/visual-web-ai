@@ -22,7 +22,7 @@
 
         const runtime = new GPURuntime();
         await runtime.init();
-        log('✓ Runtime initialized\n');
+        log(' Runtime initialized\n');
 
         // =====================
         // Test 1: Where (conditional selection)
@@ -52,7 +52,7 @@
         log(`  False values: [${falseData}]`);
         log(`  Output: [${Array.from(output1)}]`);
         log(`  Expected: [${expected1}]`);
-        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass1 ? 'PASS ' : 'FAIL '}`);
         executor1.destroy();
 
         // =====================
@@ -85,7 +85,7 @@
         log(`  Indices: [0, 2] (select rows 0 and 2)`);
         log(`  Output: [${Array.from(output2)}]`);
         log(`  Expected: [${expected2}]`);
-        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass2 ? 'PASS ' : 'FAIL '}`);
         executor2.destroy();
 
         // =====================
@@ -115,7 +115,7 @@
         const cosExpected = [1, 0, -1, 0];
         const passSin = sinExpected.every((v, i) => Math.abs(outputs3[0][i] - v) < 0.01);
         const passCos = cosExpected.every((v, i) => Math.abs(outputs3[1][i] - v) < 0.01);
-        log(`  ${passSin && passCos ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${passSin && passCos ? 'PASS ' : 'FAIL '}`);
         executor3.destroy();
 
         // =====================
@@ -138,7 +138,7 @@
         log(`  Input: [${input4}]`);
         log(`  Clamp(-1, 1): [${Array.from(output4)}]`);
         log(`  Expected: [${expected4}]`);
-        log(`  ${pass4 ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  ${pass4 ? 'PASS ' : 'FAIL '}`);
         executor4.destroy();
 
         // =====================
@@ -170,10 +170,10 @@
           // Top 3 values should be 9, 6, 5 (descending)
           const topValues = Array.from(outputs5[0]);
           const pass5 = topValues[0] >= topValues[1] && topValues[1] >= topValues[2];
-          log(`  Top values descending: ${pass5 ? 'PASS ✓' : 'FAIL ✗'}`);
+          log(`  Top values descending: ${pass5 ? 'PASS ' : 'FAIL '}`);
         } else {
           log(`  Single output: [${Array.from(outputs5).map(x => x.toFixed(1))}]`);
-          log(`  FAIL ✗ - Expected multiple outputs`);
+          log(`  FAIL  - Expected multiple outputs`);
         }
         executor5.destroy();
 
@@ -202,14 +202,14 @@
         const pos0 = Array.from(output6.slice(0, 8));
         const pos1 = Array.from(output6.slice(8, 16));
         const different = pos0.some((v, i) => Math.abs(v - pos1[i]) > 0.01);
-        log(`  Positions are different: ${different ? 'PASS ✓' : 'FAIL ✗'}`);
+        log(`  Positions are different: ${different ? 'PASS ' : 'FAIL '}`);
         executor6.destroy();
 
         runtime.destroy();
         log('\n=== All New Operations Tests Completed ===');
 
       } catch (e) {
-        log('✗ Error: ' + e.message);
+        log(' Error: ' + e.message);
         console.error(e);
       }
     }

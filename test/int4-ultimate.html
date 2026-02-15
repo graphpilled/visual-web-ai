@@ -13,7 +13,7 @@
   </style>
 </head>
 <body>
-  <h1>🏆 INT4 Ultimate - Pushing to Hardware Limits</h1>
+  <h1> INT4 Ultimate - Pushing to Hardware Limits</h1>
   <pre id="output"></pre>
   <script type="module">
     const log = (msg, cls = '') => {
@@ -116,7 +116,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     async function benchmark() {
-      log('=== 🏆 INT4 Ultimate - Hardware Limit Performance ===\n', 'header');
+      log('===  INT4 Ultimate - Hardware Limit Performance ===\n', 'header');
       
       const adapter = await navigator.gpu.requestAdapter();
       const device = await adapter.requestDevice({
@@ -229,7 +229,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       log(`32 layers matmul: ${matmulTotal.toFixed(0)}ms`);
       log(`Other ops:        ${otherOps.toFixed(0)}ms`);
       log(`Total:            ${total.toFixed(0)}ms`);
-      log(`\n🏆 TOKENS/SEC: ${tokPerSec.toFixed(2)}`, 'gold');
+      log(`\n TOKENS/SEC: ${tokPerSec.toFixed(2)}`, 'gold');
       
       // Compare to original
       log('\n--- Journey Summary ---\n', 'header');

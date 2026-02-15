@@ -63,7 +63,7 @@
   </style>
 </head>
 <body>
-  <h1>🔤 Qwen2.5 Tokenizer Test</h1>
+  <h1> Qwen2.5 Tokenizer Test</h1>
   
   <div class="file-inputs">
     <p>Load tokenizer files from your Qwen2.5 model folder:</p>
@@ -121,7 +121,7 @@
       const tokenizerJsonFile = document.getElementById('tokenizerJsonFile').files[0];
       
       if (!vocabFile || !mergesFile) {
-        log('❌ Please select both vocab.json and merges.txt', 'fail');
+        log(' Please select both vocab.json and merges.txt', 'fail');
         return;
       }
       
@@ -133,7 +133,7 @@
         
         tokenizer = await loadTokenizerFromFiles(vocabFile, mergesFile, tokenizerJsonFile);
         
-        log(`\n✅ Tokenizer loaded!`, 'pass');
+        log(`\n Tokenizer loaded!`, 'pass');
         log(`   Vocabulary size: ${tokenizer.vocabSize}`, 'info');
         log(`   Merge rules: ${tokenizer.bpeRanks.size}`, 'info');
         log(`   Special tokens: ${Object.keys(tokenizer.specialTokens).length}`, 'info');
@@ -167,23 +167,23 @@
           
           log(`"${text.slice(0, 30)}${text.length > 30 ? '...' : ''}"`, 'info');
           log(`  Tokens: [${ids.slice(0, 10).join(', ')}${ids.length > 10 ? ', ...' : ''}] (${ids.length} tokens)`);
-          log(`  Round-trip: ${match ? '✅' : '❌'}`, match ? 'pass' : 'fail');
+          log(`  Round-trip: ${match ? '' : ''}`, match ? 'pass' : 'fail');
         }
         
         // Show test section
         document.getElementById('testSection').style.display = 'block';
         
-        log('\n✅ Ready for testing!', 'pass');
+        log('\n Ready for testing!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
     
     function testEncode() {
       if (!tokenizer) {
-        log('❌ Load tokenizer first', 'fail');
+        log(' Load tokenizer first', 'fail');
         return;
       }
       
@@ -227,7 +227,7 @@
     
     function testChatTemplate() {
       if (!tokenizer) {
-        log('❌ Load tokenizer first', 'fail');
+        log(' Load tokenizer first', 'fail');
         return;
       }
       

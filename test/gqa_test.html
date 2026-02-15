@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>🎯 GQA Attention Kernel Test</h1>
+  <h1> GQA Attention Kernel Test</h1>
   <p>Tests Grouped Query Attention for Qwen2.5 inference.</p>
   <button onclick="runTests()">Run All Tests</button>
   <button onclick="runBenchmark()">Run Benchmark</button>
@@ -223,7 +223,7 @@ fn main(
           maxStorageBufferBindingSize: 256 * 1024 * 1024, // 256MB
         }
       });
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -374,7 +374,7 @@ fn main(
           // Compare
           const result = compareArrays(expected, actual);
           
-          log(`  ${result.match ? '✅ PASS' : '❌ FAIL'} (max diff: ${result.maxDiff.toExponential(2)})`, 
+          log(`  ${result.match ? ' PASS' : ' FAIL'} (max diff: ${result.maxDiff.toExponential(2)})`, 
               result.match ? 'pass' : 'fail');
           
           if (!result.match) {
@@ -421,12 +421,12 @@ fn main(
         log(`  Q heads 7-13 use KV head 1`);
         log(`  Q heads 14-20 use KV head 2`);
         log(`  Q heads 21-27 use KV head 3`);
-        log(`  ✅ GQA grouping verified`, 'pass');
+        log(`   GQA grouping verified`, 'pass');
         
-        log('\n✅ All tests complete!', 'pass');
+        log('\n All tests complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -538,10 +538,10 @@ fn main(
           outputBuffer.destroy();
         }
         
-        log('\n✅ Benchmark complete!', 'pass');
+        log('\n Benchmark complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

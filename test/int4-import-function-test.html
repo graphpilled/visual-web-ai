@@ -14,7 +14,7 @@
   </style>
 </head>
 <body>
-  <h1>🧪 INT4 Codegen Test - Verify Optimizations</h1>
+  <h1> INT4 Codegen Test - Verify Optimizations</h1>
   <pre id="output"></pre>
   <script type="module">
     // Import the compiled ReScript codegen module
@@ -54,12 +54,12 @@
     }
 
     async function runTests() {
-      log('=== 🧪 INT4 Codegen Optimization Test ===\n', 'header');
+      log('===  INT4 Codegen Optimization Test ===\n', 'header');
       
       // Initialize WebGPU
       const adapter = await navigator.gpu.requestAdapter();
       if (!adapter) {
-        log('❌ WebGPU not supported', 'fail');
+        log(' WebGPU not supported', 'fail');
         return;
       }
       
@@ -70,7 +70,7 @@
         }
       });
       
-      log('✅ WebGPU initialized\n', 'pass');
+      log(' WebGPU initialized\n', 'pass');
       
       // Test parameters (LLaMA 7B dimensions)
       const testCases = [
@@ -92,11 +92,11 @@
         // Call the ReScript-generated function
         // The exact API depends on how your bundle exports it
         kernel = Codegen.genInt4MatMulKernel(M, K, N, GROUP_SIZE);
-        log('✅ Kernel generated successfully', 'pass');
+        log(' Kernel generated successfully', 'pass');
         log(`   Name: ${kernel.name}`, 'code');
         log(`   Bindings: ${kernel.bindings.length}`, 'code');
       } catch (e) {
-        log(`❌ Kernel generation failed: ${e.message}`, 'fail');
+        log(` Kernel generation failed: ${e.message}`, 'fail');
         log('\nFalling back to inline kernel for testing...\n', 'warn');
         
         // Fallback: use inline kernel (your V29 optimized version)
@@ -110,30 +110,30 @@
       
       // Check 1: Column-major access pattern
       const hasColumnMajor = wgsl.includes('base * N + col') || wgsl.includes('* N + col');
-      log(`${hasColumnMajor ? '✅' : '❌'} Column-major memory access (coalesced)`, hasColumnMajor ? 'pass' : 'fail');
+      log(`${hasColumnMajor ? '' : ''} Column-major memory access (coalesced)`, hasColumnMajor ? 'pass' : 'fail');
       
       // Check 2: Workgroup size is tuned (not default 256)
       const wgMatch = wgsl.match(/@workgroup_size\((\d+)/);
       const wgSize = wgMatch ? parseInt(wgMatch[1]) : 0;
       const hasOptimizedWG = wgSize > 0 && wgSize !== 256;
-      log(`${hasOptimizedWG ? '✅' : '⚠️'} Workgroup size: ${wgSize} (${wgSize === 256 ? 'default' : 'tuned'})`, hasOptimizedWG ? 'pass' : 'warn');
+      log(`${hasOptimizedWG ? '' : '️'} Workgroup size: ${wgSize} (${wgSize === 256 ? 'default' : 'tuned'})`, hasOptimizedWG ? 'pass' : 'warn');
       
       // Check 3: Unrolled loop (multiple p0, p1, p2... variables)
       const unrolledLoads = (wgsl.match(/let [pq]\d+ = b_packed/g) || []).length;
       const hasUnrolling = unrolledLoads >= 16;
-      log(`${hasUnrolling ? '✅' : '❌'} Unrolled weight loads: ${unrolledLoads} (expect 16)`, hasUnrolling ? 'pass' : 'fail');
+      log(`${hasUnrolling ? '' : ''} Unrolled weight loads: ${unrolledLoads} (expect 16)`, hasUnrolling ? 'pass' : 'fail');
       
       // Check 4: vec4 + dot() usage
       const hasDotProduct = wgsl.includes('dot(') && wgsl.includes('vec4<f32>');
-      log(`${hasDotProduct ? '✅' : '❌'} Vectorized dot products (vec4 + dot)`, hasDotProduct ? 'pass' : 'fail');
+      log(`${hasDotProduct ? '' : ''} Vectorized dot products (vec4 + dot)`, hasDotProduct ? 'pass' : 'fail');
       
       // Check 5: Scale applied per group
       const scalePerGroup = wgsl.includes('sum += acc * s') || wgsl.includes('acc * s');
-      log(`${scalePerGroup ? '✅' : '❌'} Scale applied once per group`, scalePerGroup ? 'pass' : 'fail');
+      log(`${scalePerGroup ? '' : ''} Scale applied once per group`, scalePerGroup ? 'pass' : 'fail');
       
       // Summary
       const allOptimizations = hasColumnMajor && hasUnrolling && hasDotProduct && scalePerGroup;
-      log(`\n${allOptimizations ? '✅' : '❌'} All critical optimizations: ${allOptimizations ? 'PRESENT' : 'MISSING'}`, allOptimizations ? 'pass' : 'fail');
+      log(`\n${allOptimizations ? '' : ''} All critical optimizations: ${allOptimizations ? 'PRESENT' : 'MISSING'}`, allOptimizations ? 'pass' : 'fail');
       
       // Benchmark if all optimizations present
       if (allOptimizations) {
@@ -159,7 +159,7 @@
         log(`Per layer: ${perLayer.toFixed(2)}ms`);
         log(`32 layers: ${(perLayer * 32).toFixed(0)}ms`);
         log(`Total:     ${total.toFixed(0)}ms`);
-        log(`🚀 Speed:  ${tokPerSec.toFixed(2)} tok/s`, 'gold');
+        log(` Speed:  ${tokPerSec.toFixed(2)} tok/s`, 'gold');
         
         const peakBw = Math.max(qkv.bw, gateUp.bw, down.bw);
         log(`\nPeak bandwidth: ${peakBw.toFixed(2)} GB/s`);

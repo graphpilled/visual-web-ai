@@ -24,7 +24,7 @@
       
       const runtime = new GPURuntime();
       await runtime.init();
-      log('✓ Runtime initialized\n');
+      log(' Runtime initialized\n');
 
       // Test 1: Simple 2D MatMul [2,3] @ [3,4] -> [2,4]
       log('Test 1: 2D MatMul [2,3] @ [3,4] -> [2,4]');
@@ -52,10 +52,10 @@
         log(`  Expected: [1,2,3,0, 4,5,6,0]`);
         const expected1 = [1, 2, 3, 0, 4, 5, 6, 0];
         const pass1 = expected1.every((v, i) => Math.abs(output1[i] - v) < 0.01);
-        log(`  ${pass1 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        log(`  ${pass1 ? 'PASS ' : 'FAIL '}\n`);
         executor1.destroy();
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`);
+        log(`  FAIL : ${e.message}\n`);
         console.error(e);
       }
 
@@ -100,10 +100,10 @@
         log(`  Expected: [1,0,0,0, 0,1,0,0, 2,0,0,0, 0,2,0,0]`);
         const expected2 = [1, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0];
         const pass2 = expected2.every((v, i) => Math.abs(output2[i] - v) < 0.01);
-        log(`  ${pass2 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        log(`  ${pass2 ? 'PASS ' : 'FAIL '}\n`);
         executor2.destroy();
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`);
+        log(`  FAIL : ${e.message}\n`);
         console.error(e);
       }
 
@@ -140,10 +140,10 @@
         log(`  Expected: [1,0,0,0, 0,1,0,0, 2,0,0,0, 0,2,0,0]`);
         const expected3 = [1, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0];
         const pass3 = expected3.every((v, i) => Math.abs(output3[i] - v) < 0.01);
-        log(`  ${pass3 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        log(`  ${pass3 ? 'PASS ' : 'FAIL '}\n`);
         executor3.destroy();
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`);
+        log(`  FAIL : ${e.message}\n`);
         console.error(e);
       }
 
@@ -165,10 +165,10 @@
         log(`  [1,2,3,4] @ [1,1,1,1]^T = ${output4[0]}`);
         log(`  Expected: 10`);
         const pass4 = Math.abs(output4[0] - 10) < 0.01;
-        log(`  ${pass4 ? 'PASS ✓' : 'FAIL ✗'}\n`);
+        log(`  ${pass4 ? 'PASS ' : 'FAIL '}\n`);
         executor4.destroy();
       } catch (e) {
-        log(`  FAIL ✗: ${e.message}\n`);
+        log(`  FAIL : ${e.message}\n`);
         console.error(e);
       }
 

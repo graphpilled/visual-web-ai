@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>🚀 LM Head Optimized Test</h1>
+  <h1> LM Head Optimized Test</h1>
   <p>Tests chunked LM Head with Top-K extraction for efficient inference.</p>
   <button onclick="runTests()">Run All Tests</button>
   <button onclick="runBenchmark()">Run Benchmark</button>
@@ -102,7 +102,7 @@
           maxStorageBufferBindingSize: 2 * 1024 * 1024 * 1024,
         }
       });
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -166,8 +166,8 @@
         const isDescending = result.indices[0] > result.indices[1];
         const topIsLarge = result.indices[0] > vocabSize * 0.9;
         
-        log(`  Top index > 90% vocab: ${topIsLarge ? '✅' : '❌'}`);
-        log(`  ${topIsLarge ? '✅ PASS' : '❌ FAIL'}`, topIsLarge ? 'pass' : 'fail');
+        log(`  Top index > 90% vocab: ${topIsLarge ? '' : ''}`);
+        log(`  ${topIsLarge ? ' PASS' : ' FAIL'}`, topIsLarge ? 'pass' : 'fail');
         
         // Test 2: Verify top-k ordering
         log('\n--- Test 2: Top-K Ordering ---', 'header');
@@ -180,10 +180,10 @@
           }
         }
         
-        log(`  Values are descending: ${isOrdered ? '✅' : '❌'}`);
+        log(`  Values are descending: ${isOrdered ? '' : ''}`);
         log(`  Min value in top-k: ${result.values[topK-1].toFixed(6)}`);
         log(`  Max value in top-k: ${result.values[0].toFixed(6)}`);
-        log(`  ${isOrdered ? '✅ PASS' : '❌ FAIL'}`, isOrdered ? 'pass' : 'fail');
+        log(`  ${isOrdered ? ' PASS' : ' FAIL'}`, isOrdered ? 'pass' : 'fail');
         
         // Test 3: Compare with original LM Head
         log('\n--- Test 3: Compare with Original ---', 'header');
@@ -226,8 +226,8 @@
         log(`  Optimized top-1: index=${result.indices[0]}, value=${result.values[0].toFixed(4)}`);
         
         const topMatch = trueTopK[0].index === result.indices[0];
-        log(`  Top-1 match: ${topMatch ? '✅' : '❌'}`);
-        log(`  ${matchCount === topK ? '✅ PASS' : '⚠️ PARTIAL'} (${matchCount}/${topK} match)`, 
+        log(`  Top-1 match: ${topMatch ? '' : ''}`);
+        log(`  ${matchCount === topK ? ' PASS' : '️ PARTIAL'} (${matchCount}/${topK} match)`, 
             matchCount === topK ? 'pass' : 'info');
         
         // Cleanup
@@ -236,10 +236,10 @@
         hiddenBuffer.destroy();
         weightBuffer.destroy();
         
-        log('\n✅ All tests complete!', 'pass');
+        log('\n All tests complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -304,7 +304,7 @@
         }
         
         // Estimate for full Qwen vocab
-        log(`\n📊 Full Qwen2.5 Estimate (vocab=${QWEN_VOCAB_SIZE}):`, 'info');
+        log(`\n Full Qwen2.5 Estimate (vocab=${QWEN_VOCAB_SIZE}):`, 'info');
         const scaleFactor = QWEN_VOCAB_SIZE / vocabSize;
         const bestChunkTime = 10; // Approximate from benchmarks
         log(`  Estimated time: ${(bestChunkTime * scaleFactor).toFixed(1)} ms`);
@@ -314,10 +314,10 @@
         hiddenBuffer.destroy();
         weightBuffer.destroy();
         
-        log('\n✅ Benchmark complete!', 'pass');
+        log('\n Benchmark complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -399,7 +399,7 @@
         const speedup = avgOriginal / avgOpt;
         log(`  Original: ${avgOriginal.toFixed(2)} ms`);
         log(`  Optimized: ${avgOpt.toFixed(2)} ms`);
-        log(`  Speedup: ${speedup.toFixed(2)}x ${speedup > 1 ? '🚀' : ''}`, speedup > 1 ? 'pass' : 'fail');
+        log(`  Speedup: ${speedup.toFixed(2)}x ${speedup > 1 ? '' : ''}`, speedup > 1 ? 'pass' : 'fail');
         log(`  Memory reduction: ${(vocabSize * 4 / (256 * 8)).toFixed(0)}x`);
         
         // Cleanup
@@ -408,10 +408,10 @@
         hiddenBuffer.destroy();
         weightBuffer.destroy();
         
-        log('\n✅ Comparison complete!', 'pass');
+        log('\n Comparison complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

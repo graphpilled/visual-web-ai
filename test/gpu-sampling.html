@@ -25,7 +25,7 @@
   </style>
 </head>
 <body>
-  <h1>🎲 GPU Sampling Test - Top-K & Top-P</h1>
+  <h1> GPU Sampling Test - Top-K & Top-P</h1>
   <p>Tests GPU-based rejection sampling for LLM inference with proper top-k and top-p filtering.</p>
   <div>
     <button onclick="runTests()" id="btnTests">Run All Tests</button>
@@ -60,7 +60,7 @@
           maxStorageBufferBindingSize: 1024 * 1024 * 1024,
         }
       });
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -106,7 +106,7 @@
           const result = await sampler.sampleGreedy(buffer);
           log(`  Hot token: 42 (logit=100, others=0)`);
           log(`  Argmax result: ${result.tokenId}`);
-          log(`  ${result.tokenId === 42 ? '✅ PASS' : '❌ FAIL'}`, result.tokenId === 42 ? 'pass' : 'fail');
+          log(`  ${result.tokenId === 42 ? ' PASS' : ' FAIL'}`, result.tokenId === 42 ? 'pass' : 'fail');
           
           buffer.destroy();
           sampler.destroy();
@@ -141,7 +141,7 @@
           
           const hotSampled = [100, 200, 300].filter(id => samples.has(id)).length;
           log(`  Hot tokens sampled: ${hotSampled}/3`);
-          log(`  ${hotSampled >= 2 ? '✅ PASS' : '❌ FAIL'}`, hotSampled >= 2 ? 'pass' : 'fail');
+          log(`  ${hotSampled >= 2 ? ' PASS' : ' FAIL'}`, hotSampled >= 2 ? 'pass' : 'fail');
           
           buffer.destroy();
           sampler.destroy();
@@ -176,8 +176,8 @@
           
           log(`  Low temp (0.1): max token count = ${lowMax}/50`);
           log(`  High temp (2.0): max token count = ${highMax}/50`);
-          log(`  Low temp more peaked: ${lowMax > highMax ? '✅' : '❌'}`);
-          log(`  ${lowMax > highMax ? '✅ PASS' : '⚠️ CHECK'}`, lowMax > highMax ? 'pass' : 'warn');
+          log(`  Low temp more peaked: ${lowMax > highMax ? '' : ''}`);
+          log(`  ${lowMax > highMax ? ' PASS' : '️ CHECK'}`, lowMax > highMax ? 'pass' : 'warn');
           
           buffer.destroy();
           samplerLow.destroy();
@@ -213,7 +213,7 @@
           log(`  Token 0 sampled: ${token0} times`);
           log(`  Token 1 sampled: ${token1} times`);
           log(`  Expected: penalized tokens should be rare`);
-          log(`  ${penalizedSum < 30 ? '✅ PASS' : '⚠️ CHECK'}`, penalizedSum < 30 ? 'pass' : 'warn');
+          log(`  ${penalizedSum < 30 ? ' PASS' : '️ CHECK'}`, penalizedSum < 30 ? 'pass' : 'warn');
           
           buffer.destroy();
           sampler.destroy();
@@ -241,17 +241,17 @@
           log(`  Seed: ${seed}`);
           log(`  Run A: [${resultsA.join(', ')}]`);
           log(`  Run B: [${resultsB.join(', ')}]`);
-          log(`  ${identical ? '✅ PASS' : '❌ FAIL'}`, identical ? 'pass' : 'fail');
+          log(`  ${identical ? ' PASS' : ' FAIL'}`, identical ? 'pass' : 'fail');
           
           buffer.destroy();
           samplerA.destroy();
           samplerB.destroy();
         }
         
-        log('\n✅ Basic tests complete! Run Top-K and Top-P tests separately.', 'pass');
+        log('\n Basic tests complete! Run Top-K and Top-P tests separately.', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -305,9 +305,9 @@
           log(`  Tokens outside top-${topK}: [${outsideTopK.join(', ')}]`);
           
           if (outsideTopK.length === 0) {
-            log(`  ✅ PASS - All samples within top-${topK}`, 'pass');
+            log(`   PASS - All samples within top-${topK}`, 'pass');
           } else {
-            log(`  ❌ FAIL - ${outsideTopK.length} tokens outside top-${topK}`, 'fail');
+            log(`   FAIL - ${outsideTopK.length} tokens outside top-${topK}`, 'fail');
           }
           
           // Show distribution
@@ -322,10 +322,10 @@
           log('');
         }
         
-        log('✅ Top-K test complete!', 'pass');
+        log(' Top-K test complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -393,9 +393,9 @@
           if (topP < 1.0) {
             const expectedMaxTokens = topP < 0.6 ? 3 : (topP < 0.9 ? 10 : 30);
             if (samples.size <= expectedMaxTokens) {
-              log(`  ✅ Reasonable diversity for top_p=${topP}`, 'pass');
+              log(`   Reasonable diversity for top_p=${topP}`, 'pass');
             } else {
-              log(`  ⚠️ More tokens than expected (${samples.size} > ${expectedMaxTokens})`, 'warn');
+              log(`  ️ More tokens than expected (${samples.size} > ${expectedMaxTokens})`, 'warn');
             }
           } else {
             log(`  ℹ️ top_p=1.0 (disabled) - all tokens valid`, 'info');
@@ -406,10 +406,10 @@
           log('');
         }
         
-        log('✅ Top-P test complete!', 'pass');
+        log(' Top-P test complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -474,10 +474,10 @@
           sampler.destroy();
         }
         
-        log('\n✅ Benchmark complete!', 'pass');
+        log('\n Benchmark complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

@@ -47,7 +47,7 @@
       // With padding=1 and kernel=3, output should be same spatial size
       const pass = y.shape[0] === 2 && y.shape[1] === 16 && y.shape[2] === 8 && y.shape[3] === 8;
       log(`Expected: [2, 16, 8, 8]`);
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -83,7 +83,7 @@
       const maxPass = maxOut._data[0] === 6 && maxOut._data[1] === 8 && maxOut._data[2] === 14 && maxOut._data[3] === 16;
       const avgPass = Math.abs(avgOut._data[0] - 3.5) < 0.01;
       
-      log(`\n${maxPass && avgPass ? 'PASS ✓' : 'FAIL ✗'}`, maxPass && avgPass ? 'pass' : 'fail');
+      log(`\n${maxPass && avgPass ? 'PASS ' : 'FAIL '}`, maxPass && avgPass ? 'pass' : 'fail');
       
       return maxPass && avgPass;
     }
@@ -111,7 +111,7 @@
       log(`Expected: mean≈0, std≈1`);
       
       const pass = Math.abs(mean0) < 0.01 && Math.abs(std0 - 1) < 0.01;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -142,7 +142,7 @@
       
       const pass = bn.numBatchesTracked === 1 && bn.runningMean._data[0] > 0;
       log(`Batches tracked: ${bn.numBatchesTracked}`);
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -171,7 +171,7 @@
       log(`\nFirst embedding matches weight[0]: ${match}`);
       
       const pass = y.shape[0] === 2 && y.shape[1] === 5 && y.shape[2] === 32 && match;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -194,7 +194,7 @@
       log(`State shapes: h=[${states[0][0].shape}], c=[${states[0][1].shape}]`);
       
       const pass = output.shape[0] === 3 && output.shape[1] === 5 && output.shape[2] === 20 && states.length === 2;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -214,7 +214,7 @@
       log(`Expected: [2, 4, 20]`);
       
       const pass = output.shape[0] === 2 && output.shape[1] === 4 && output.shape[2] === 20;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -249,7 +249,7 @@
       log(`Expected: [4, 10]`);
       
       const pass = y.shape[0] === 4 && y.shape[1] === 10;
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       return pass;
     }
@@ -259,7 +259,7 @@
       
       try {
         await init();
-        log('✓ Runtime initialized\n');
+        log(' Runtime initialized\n');
         
         const test1 = await testConv2D();
         const test2 = await testPooling();
@@ -271,20 +271,20 @@
         const test8 = await testCNNModel();
         
         log('\n\n=== Summary ===');
-        log(`Test 1 (Conv2D): ${test1 ? 'PASS ✓' : 'FAIL ✗'}`, test1 ? 'pass' : 'fail');
-        log(`Test 2 (Pooling): ${test2 ? 'PASS ✓' : 'FAIL ✗'}`, test2 ? 'pass' : 'fail');
-        log(`Test 3 (LayerNorm): ${test3 ? 'PASS ✓' : 'FAIL ✗'}`, test3 ? 'pass' : 'fail');
-        log(`Test 4 (BatchNorm): ${test4 ? 'PASS ✓' : 'FAIL ✗'}`, test4 ? 'pass' : 'fail');
-        log(`Test 5 (Embedding): ${test5 ? 'PASS ✓' : 'FAIL ✗'}`, test5 ? 'pass' : 'fail');
-        log(`Test 6 (LSTM): ${test6 ? 'PASS ✓' : 'FAIL ✗'}`, test6 ? 'pass' : 'fail');
-        log(`Test 7 (GRU): ${test7 ? 'PASS ✓' : 'FAIL ✗'}`, test7 ? 'pass' : 'fail');
-        log(`Test 8 (CNN Model): ${test8 ? 'PASS ✓' : 'FAIL ✗'}`, test8 ? 'pass' : 'fail');
+        log(`Test 1 (Conv2D): ${test1 ? 'PASS ' : 'FAIL '}`, test1 ? 'pass' : 'fail');
+        log(`Test 2 (Pooling): ${test2 ? 'PASS ' : 'FAIL '}`, test2 ? 'pass' : 'fail');
+        log(`Test 3 (LayerNorm): ${test3 ? 'PASS ' : 'FAIL '}`, test3 ? 'pass' : 'fail');
+        log(`Test 4 (BatchNorm): ${test4 ? 'PASS ' : 'FAIL '}`, test4 ? 'pass' : 'fail');
+        log(`Test 5 (Embedding): ${test5 ? 'PASS ' : 'FAIL '}`, test5 ? 'pass' : 'fail');
+        log(`Test 6 (LSTM): ${test6 ? 'PASS ' : 'FAIL '}`, test6 ? 'pass' : 'fail');
+        log(`Test 7 (GRU): ${test7 ? 'PASS ' : 'FAIL '}`, test7 ? 'pass' : 'fail');
+        log(`Test 8 (CNN Model): ${test8 ? 'PASS ' : 'FAIL '}`, test8 ? 'pass' : 'fail');
         
         const allPass = test1 && test2 && test3 && test4 && test5 && test6 && test7 && test8;
-        log(`\n${allPass ? 'ALL TESTS PASSED ✓' : 'SOME TESTS FAILED ✗'}`, allPass ? 'pass' : 'fail');
+        log(`\n${allPass ? 'ALL TESTS PASSED ' : 'SOME TESTS FAILED '}`, allPass ? 'pass' : 'fail');
         
         if (allPass) {
-          log('\n🎉 All new layer abstractions working!');
+          log('\n All new layer abstractions working!');
         }
         
       } catch (e) {

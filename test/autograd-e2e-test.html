@@ -47,7 +47,7 @@
       log(`Expected: [${expectedGrad}]`);
       
       const pass = expectedGrad.every((v, i) => Math.abs(x.grad()[i] - v) < 0.01);
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       clearTape();
       return pass;
@@ -81,7 +81,7 @@
       log(`Expected: [${expectedGrad}]`);
       
       const pass = expectedGrad.every((v, i) => Math.abs(x.grad()[i] - v) < 0.01);
-      log(`\n${pass ? 'PASS ✓' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS ' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       clearTape();
       return pass;
@@ -119,7 +119,7 @@
       log(`|W.grad| = ${wGradNorm.toFixed(4)}`);
       
       const pass = xGradNorm > 0.01 && wGradNorm > 0.01;
-      log(`\n${pass ? 'PASS ✓ (gradients computed)' : 'FAIL ✗'}`, pass ? 'pass' : 'fail');
+      log(`\n${pass ? 'PASS  (gradients computed)' : 'FAIL '}`, pass ? 'pass' : 'fail');
       
       clearTape();
       return pass;
@@ -170,7 +170,7 @@
       const bPass = Math.abs(b._data[0] - 1.0) < 0.15;
       
       log(`\nFinal: W = ${W._data[0].toFixed(4)} (target: 2.0), b = ${b._data[0].toFixed(4)} (target: 1.0)`);
-      log(`${wPass && bPass ? 'PASS ✓' : 'FAIL ✗'}`, wPass && bPass ? 'pass' : 'fail');
+      log(`${wPass && bPass ? 'PASS ' : 'FAIL '}`, wPass && bPass ? 'pass' : 'fail');
       
       return wPass && bPass;
     }
@@ -260,12 +260,12 @@
         const pred = out._data[0] > 0.5 ? 1 : 0;
         if (pred === target) correct++;
         
-        log(`  [${x._data}] -> ${out._data[0].toFixed(4)} (pred: ${pred}, target: ${target}) ${pred === target ? '✓' : '✗'}`, pred === target ? 'pass' : 'fail');
+        log(`  [${x._data}] -> ${out._data[0].toFixed(4)} (pred: ${pred}, target: ${target}) ${pred === target ? '' : ''}`, pred === target ? 'pass' : 'fail');
       }
       
       const accuracy = correct / 4;
       log(`\nAccuracy: ${correct}/4 = ${(accuracy * 100).toFixed(0)}%`);
-      log(`${accuracy >= 0.75 ? 'PASS ✓' : 'FAIL ✗'}`, accuracy >= 0.75 ? 'pass' : 'fail');
+      log(`${accuracy >= 0.75 ? 'PASS ' : 'FAIL '}`, accuracy >= 0.75 ? 'pass' : 'fail');
       
       return accuracy >= 0.75;
     }
@@ -276,7 +276,7 @@
       
       try {
         await init();
-        log('✓ Runtime initialized\n');
+        log(' Runtime initialized\n');
         
         const test1 = await testBasicBackward();
         const test2 = await testChainedOps();
@@ -285,17 +285,17 @@
         const test5 = await testXORWithAutograd();
         
         log('\n\n=== Summary ===');
-        log(`Test 1 (Basic mul+mean): ${test1 ? 'PASS ✓' : 'FAIL ✗'}`, test1 ? 'pass' : 'fail');
-        log(`Test 2 (Chained sub+relu): ${test2 ? 'PASS ✓' : 'FAIL ✗'}`, test2 ? 'pass' : 'fail');
-        log(`Test 3 (MatMul backward): ${test3 ? 'PASS ✓' : 'FAIL ✗'}`, test3 ? 'pass' : 'fail');
-        log(`Test 4 (Linear Regression): ${test4 ? 'PASS ✓' : 'FAIL ✗'}`, test4 ? 'pass' : 'fail');
-        log(`Test 5 (XOR + Adam): ${test5 ? 'PASS ✓' : 'FAIL ✗'}`, test5 ? 'pass' : 'fail');
+        log(`Test 1 (Basic mul+mean): ${test1 ? 'PASS ' : 'FAIL '}`, test1 ? 'pass' : 'fail');
+        log(`Test 2 (Chained sub+relu): ${test2 ? 'PASS ' : 'FAIL '}`, test2 ? 'pass' : 'fail');
+        log(`Test 3 (MatMul backward): ${test3 ? 'PASS ' : 'FAIL '}`, test3 ? 'pass' : 'fail');
+        log(`Test 4 (Linear Regression): ${test4 ? 'PASS ' : 'FAIL '}`, test4 ? 'pass' : 'fail');
+        log(`Test 5 (XOR + Adam): ${test5 ? 'PASS ' : 'FAIL '}`, test5 ? 'pass' : 'fail');
         
         const allPass = test1 && test2 && test3 && test4 && test5;
-        log(`\n${allPass ? 'ALL TESTS PASSED ✓' : 'SOME TESTS FAILED ✗'}`, allPass ? 'pass' : 'fail');
+        log(`\n${allPass ? 'ALL TESTS PASSED ' : 'SOME TESTS FAILED '}`, allPass ? 'pass' : 'fail');
         
         if (allPass) {
-          log('\n🎉 Automatic differentiation is fully working!');
+          log('\n Automatic differentiation is fully working!');
           log('   - Forward ops recorded to tape');
           log('   - loss.backward() traverses tape in reverse');
           log('   - Gradients computed on GPU via backward kernels');

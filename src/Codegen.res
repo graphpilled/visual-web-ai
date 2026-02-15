@@ -1535,7 +1535,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // RMSNorm (Root Mean Square Layer Normalization)
 // Used in Qwen2, LLaMA, Mistral, etc.
 // 
-// y = x * rsqrt(mean(x²) + eps) * weight
+// y = x * rsqrt(mean(x) + eps) * weight
 // ----------------------------------------
 
 let genRMSNormKernel = (outerSize: int, normSize: int, epsilon: float): kernel => {

@@ -323,7 +323,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       log(`Memory reduction: ${(K * N * 4 / int4MemoryRead).toFixed(2)}x`);
       
       if (speedup < 1.5) {
-        log('\n⚠ INT4 not faster than expected. Possible causes:', 'warn');
+        log('\n INT4 not faster than expected. Possible causes:', 'warn');
         log('  - Dequantization overhead too high', 'warn');
         log('  - Need to optimize memory access patterns', 'warn');
       }

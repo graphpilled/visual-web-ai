@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>🔧 RMSNorm Kernel Test</h1>
+  <h1> RMSNorm Kernel Test</h1>
   <p>Tests the RMSNorm WGSL kernel for Qwen2.5 inference.</p>
   <button onclick="runTests()">Run All Tests</button>
   <button onclick="runBenchmark()">Run Benchmark</button>
@@ -124,7 +124,7 @@ fn main(
       }
       
       device = await adapter.requestDevice();
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -254,9 +254,9 @@ fn main(
           const result = compareArrays(expected, actual);
           
           if (result.match) {
-            log(`  ✅ PASS (max diff: ${result.maxDiff.toExponential(2)})`, 'pass');
+            log(`   PASS (max diff: ${result.maxDiff.toExponential(2)})`, 'pass');
           } else {
-            log(`  ❌ FAIL at index ${result.index} (max diff: ${result.maxDiff.toExponential(2)})`, 'fail');
+            log(`   FAIL at index ${result.index} (max diff: ${result.maxDiff.toExponential(2)})`, 'fail');
             log(`    Expected: ${expected[result.index]}`);
             log(`    Actual: ${actual[result.index]}`);
           }
@@ -293,12 +293,12 @@ fn main(
         for (let i = 0; i < knownSize; i++) knownExpected[i] = knownInput[i] * expectedScale;
         
         const knownResult = compareArrays(knownExpected, result);
-        log(`  ${knownResult.match ? '✅ PASS' : '❌ FAIL'}`, knownResult.match ? 'pass' : 'fail');
+        log(`  ${knownResult.match ? ' PASS' : ' FAIL'}`, knownResult.match ? 'pass' : 'fail');
         
-        log('\n✅ All tests complete!', 'pass');
+        log('\n All tests complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -401,7 +401,7 @@ fn main(
         log(`  Bandwidth: ${bandwidth.toFixed(2)} GB/s`);
         
         // Compare to matmul time
-        log(`\n📊 Context:`, 'info');
+        log(`\n Context:`, 'info');
         log(`  In Qwen2.5 7B, RMSNorm runs 2x per layer (56 total)`);
         log(`  At ${(avgTime * 1000).toFixed(2)} µs each = ${(avgTime * 56).toFixed(2)} ms total`);
         log(`  This is ~${(avgTime * 56 / 310 * 100).toFixed(1)}% of one INT4 matmul forward pass`);
@@ -412,7 +412,7 @@ fn main(
         outputBuffer.destroy();
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>🔄 RoPE Kernel Test</h1>
+  <h1> RoPE Kernel Test</h1>
   <p>Tests Rotary Position Embedding for Qwen2.5 inference.</p>
   <button onclick="runTests()">Run All Tests</button>
   <button onclick="runBenchmark()">Run Benchmark</button>
@@ -167,7 +167,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       }
       
       device = await adapter.requestDevice();
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -320,12 +320,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           
           // Compare Q
           const qResult = compareArrays(expected.q, actual.q);
-          log(`  Q: ${qResult.match ? '✅ PASS' : '❌ FAIL'} (max diff: ${qResult.maxDiff.toExponential(2)})`, 
+          log(`  Q: ${qResult.match ? ' PASS' : ' FAIL'} (max diff: ${qResult.maxDiff.toExponential(2)})`, 
               qResult.match ? 'pass' : 'fail');
           
           // Compare K
           const kResult = compareArrays(expected.k, actual.k);
-          log(`  K: ${kResult.match ? '✅ PASS' : '❌ FAIL'} (max diff: ${kResult.maxDiff.toExponential(2)})`, 
+          log(`  K: ${kResult.match ? ' PASS' : ' FAIL'} (max diff: ${kResult.maxDiff.toExponential(2)})`, 
               kResult.match ? 'pass' : 'fail');
         }
         
@@ -351,12 +351,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         
         const knownMatch = Math.abs(result.q[0] - Math.cos(angle)) < 1e-5 && 
                           Math.abs(result.q[1] - Math.sin(angle)) < 1e-5;
-        log(`  ${knownMatch ? '✅ PASS' : '❌ FAIL'}`, knownMatch ? 'pass' : 'fail');
+        log(`  ${knownMatch ? ' PASS' : ' FAIL'}`, knownMatch ? 'pass' : 'fail');
         
-        log('\n✅ All tests complete!', 'pass');
+        log('\n All tests complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -447,7 +447,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         log(`  Memory: ${(bytesPerOp / 1024).toFixed(1)} KB per op`);
         log(`  Bandwidth: ${bandwidth.toFixed(2)} GB/s`);
         
-        log(`\n📊 Context:`, 'info');
+        log(`\n Context:`, 'info');
         log(`  RoPE runs once per layer (28 total)`);
         log(`  At ${(avgTime * 1000).toFixed(2)} µs each = ${(avgTime * 28).toFixed(2)} ms total`);
         
@@ -457,7 +457,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         posBuffer.destroy();
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

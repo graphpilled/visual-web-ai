@@ -88,7 +88,7 @@
 
       const runtime = new GPURuntime();
       await runtime.init();
-      log('✓ WebGPU Runtime initialized\n', 'pass');
+      log(' WebGPU Runtime initialized\n', 'pass');
 
       // Get GPU info
       const adapter = await navigator.gpu.requestAdapter();
@@ -176,12 +176,12 @@
         log(`\nPrefill/Decode GFLOPS ratio: ${ratio.toFixed(1)}x`, 'info');
         
         if (decode.bandwidth > decode.gflops * 2) {
-          log('\n⚠ Decode is MEMORY BOUND (as expected for M=1)', 'warn');
+          log('\n Decode is MEMORY BOUND (as expected for M=1)', 'warn');
           log('  INT4 quantization should give ~4x speedup here by reducing memory traffic', 'info');
         }
         
         if (prefill.gflops > prefill.bandwidth * 10) {
-          log('\n✓ Prefill is COMPUTE BOUND (as expected for large M)', 'pass');
+          log('\n Prefill is COMPUTE BOUND (as expected for large M)', 'pass');
           log('  INT4 quantization benefit depends on dequant overhead vs memory savings', 'info');
         }
       }

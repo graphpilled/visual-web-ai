@@ -32,9 +32,9 @@
         if (compiled1) {
           log(`  Compiled: ${compiled1.ops.length} ops, ${compiled1.buffers.length} buffers`);
           log(`  Total buffer size: ${compiled1.totalBufferSize} bytes`);
-          log('  PASS ✓');
+          log('  PASS ');
         } else {
-          log('  FAIL ✗ - compilation returned undefined');
+          log('  FAIL  - compilation returned undefined');
         }
 
         // Test 2: Chain of ops (input -> relu -> sigmoid -> output)
@@ -52,9 +52,9 @@
           compiled2.ops.forEach((op, i) => {
             log(`    Op ${i}: ${op.kernel.name}`);
           });
-          log('  PASS ✓');
+          log('  PASS ');
         } else {
-          log('  FAIL ✗');
+          log('  FAIL ');
         }
 
         // Test 3: Binary op (add two inputs)
@@ -71,9 +71,9 @@
           log(`  Compiled: ${compiled3.ops.length} ops, ${compiled3.buffers.length} buffers`);
           log(`  Input buffers: [${compiled3.inputBufferIds.join(', ')}]`);
           log(`  Output buffers: [${compiled3.outputBufferIds.join(', ')}]`);
-          log('  PASS ✓');
+          log('  PASS ');
         } else {
-          log('  FAIL ✗');
+          log('  FAIL ');
         }
 
         // Test 4: MatMul
@@ -87,9 +87,9 @@
         if (compiled4) {
           log(`  Compiled: ${compiled4.ops.length} ops`);
           log(`  Output shape inferred from buffers`);
-          log('  PASS ✓');
+          log('  PASS ');
         } else {
-          log('  FAIL ✗');
+          log('  FAIL ');
         }
 
         // Test 5: MLP-like graph (input -> dense -> relu -> dense -> softmax)
@@ -110,9 +110,9 @@
           compiled5.ops.forEach((op, i) => {
             log(`    Op ${i}: ${op.kernel.name}`);
           });
-          log('  PASS ✓');
+          log('  PASS ');
         } else {
-          log('  FAIL ✗');
+          log('  FAIL ');
         }
 
         // Test 6: Execute compiled graph
@@ -139,14 +139,14 @@
           
           const expected = [0, 2, 0, 4];
           const pass = expected.every((v, i) => Math.abs(output[i] - v) < 0.001);
-          log(`Executed ReLU: [${input}] → [${Array.from(output)}] ${pass ? 'PASS ✓' : 'FAIL ✗'}`);
+          log(`Executed ReLU: [${input}] → [${Array.from(output)}] ${pass ? 'PASS ' : 'FAIL '}`);
         }
 
         runtime.destroy();
         log('\n=== All Compiler Tests Completed ===');
 
       } catch (e) {
-        log('✗ Error: ' + e.message);
+        log(' Error: ' + e.message);
         console.error(e);
       }
     }

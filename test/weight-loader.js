@@ -387,7 +387,7 @@ class Qwen2WeightLoader {
       device.queue.writeBuffer(buffers.embed_tokens, 0, embedRaw.buffer);
       buffers.embed_tokens_dtype = embedRaw.dtype;
       buffers.embed_tokens_shape = embedRaw.shape;
-      this._progress(`  ✅ Embedding: ${(embedRaw.buffer.byteLength / 1024 / 1024).toFixed(1)} MB (${embedRaw.dtype})`);
+      this._progress(`   Embedding: ${(embedRaw.buffer.byteLength / 1024 / 1024).toFixed(1)} MB (${embedRaw.dtype})`);
     }
     
     // 2. Load layers one at a time
@@ -400,7 +400,7 @@ class Qwen2WeightLoader {
       const layerBuffers = {};
       
       if (!this._findTensorFile(`${names.q_proj}.qweight`)) {
-        this._progress(`  ⚠️ Layer ${i} not found, skipping`);
+        this._progress(`  ️ Layer ${i} not found, skipping`);
         continue;
       }
       
@@ -463,7 +463,7 @@ class Qwen2WeightLoader {
       device.queue.writeBuffer(buffers.lm_head, 0, lmHeadRaw.buffer);
       buffers.lm_head_dtype = lmHeadRaw.dtype;
       buffers.lm_head_shape = lmHeadRaw.shape;
-      this._progress(`  ✅ LM Head: ${(lmHeadRaw.buffer.byteLength / 1024 / 1024).toFixed(1)} MB (${lmHeadRaw.dtype})`);
+      this._progress(`   LM Head: ${(lmHeadRaw.buffer.byteLength / 1024 / 1024).toFixed(1)} MB (${lmHeadRaw.dtype})`);
     }
     
     // Calculate total GPU memory
@@ -489,8 +489,8 @@ class Qwen2WeightLoader {
     countBuffer(buffers.norm);
     countBuffer(buffers.lm_head);
     
-    this._progress(`\n✅ Total GPU memory: ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
-    this._progress(`✅ ${buffers.layers.length} layers loaded`);
+    this._progress(`\n Total GPU memory: ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
+    this._progress(` ${buffers.layers.length} layers loaded`);
     
     return buffers;
   }

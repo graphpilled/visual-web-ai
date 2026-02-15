@@ -26,7 +26,7 @@
   </style>
 </head>
 <body>
-  <h1>🔬 LM Head Isolated Benchmark</h1>
+  <h1> LM Head Isolated Benchmark</h1>
   <p>Test each version in isolation with proper cleanup between runs.</p>
   
   <div>
@@ -142,7 +142,7 @@
         // Fresh WebGPU device
         log('Initializing fresh WebGPU device...', 'info');
         await initWebGPU();
-        log('✅ WebGPU initialized\n', 'pass');
+        log(' WebGPU initialized\n', 'pass');
         
         log(`Config: vocab=${vocabSize}, hidden=${hiddenSize}`, 'info');
         log(`Warmup: ${warmupIterations}, Benchmark: ${iterations}\n`);
@@ -235,11 +235,11 @@
         // Force GC if available
         if (window.gc) window.gc();
         
-        log('\n✅ Benchmark complete!', 'pass');
+        log('\n Benchmark complete!', 'pass');
         log('\nℹ️ Wait a few seconds before running the next test for accurate comparison.', 'info');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

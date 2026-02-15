@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>⚡ LM Head V4 Benchmark</h1>
+  <h1> LM Head V4 Benchmark</h1>
   <p>Batched workgroups for reduced dispatch overhead.</p>
   <button onclick="runBenchmark()">Run Full Benchmark</button>
   <button onclick="testCorrectness()">Test Correctness</button>
@@ -89,7 +89,7 @@
           maxStorageBufferBindingSize: 2 * 1024 * 1024 * 1024,
         }
       });
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -177,8 +177,8 @@
         const v4Pass = maxDiffV4 < 1e-3;
         const vec4Pass = maxDiffVec4 < 1e-3;
         
-        log(`\nV4: ${v4Pass ? '✅ PASS' : '❌ FAIL'}`, v4Pass ? 'pass' : 'fail');
-        log(`Vec4: ${vec4Pass ? '✅ PASS' : '❌ FAIL'}`, vec4Pass ? 'pass' : 'fail');
+        log(`\nV4: ${v4Pass ? ' PASS' : ' FAIL'}`, v4Pass ? 'pass' : 'fail');
+        log(`Vec4: ${vec4Pass ? ' PASS' : ' FAIL'}`, vec4Pass ? 'pass' : 'fail');
         
         // Sample values
         log(`\nSample logits[0]: orig=${origLogits[0].toFixed(4)}, v4=${v4Logits[0].toFixed(4)}, vec4=${vec4Logits[0].toFixed(4)}`);
@@ -192,7 +192,7 @@
         weightBuffer.destroy();
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -318,7 +318,7 @@
         }
         
         // Qwen estimate
-        log(`\n📊 Qwen2.5 Estimate (vocab=${QWEN_VOCAB_SIZE}):`, 'info');
+        log(`\n Qwen2.5 Estimate (vocab=${QWEN_VOCAB_SIZE}):`, 'info');
         const scale = QWEN_VOCAB_SIZE / vocabSize;
         log(`  Original: ~${(origTime * scale).toFixed(1)} ms`);
         log(`  Best (${fastest.name}): ~${(fastest.time * scale).toFixed(1)} ms`);
@@ -327,10 +327,10 @@
         hiddenBuffer.destroy();
         weightBuffer.destroy();
         
-        log('\n✅ Benchmark complete!', 'pass');
+        log('\n Benchmark complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>📖 Embedding Lookup Test</h1>
+  <h1> Embedding Lookup Test</h1>
   <p>Tests F16 → F32 embedding lookup for Qwen2.5 inference.</p>
   <button onclick="runTests()">Run All Tests</button>
   <button onclick="runBenchmark()">Run Benchmark</button>
@@ -114,7 +114,7 @@
           maxStorageBufferBindingSize: 2 * 1024 * 1024 * 1024, // 2GB for full embedding
         }
       });
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -151,7 +151,7 @@
         log('\n--- Test 1: Create Embedding Table ---', 'header');
         const embTable = createTestEmbeddingTable(TEST_VOCAB_SIZE, TEST_HIDDEN_SIZE);
         log(`  Table size: ${(embTable.byteLength / 1024).toFixed(1)} KB`);
-        log(`  ✅ Created test embedding table`, 'pass');
+        log(`   Created test embedding table`, 'pass');
         
         // Upload to GPU
         const embBuffer = device.createBuffer({
@@ -166,7 +166,7 @@
         const embLookup = new EmbeddingLookup(device, TEST_VOCAB_SIZE, TEST_HIDDEN_SIZE);
         embLookup.setEmbeddingBuffer(embBuffer);
         await embLookup.init();
-        log(`  ✅ Embedding lookup initialized`, 'pass');
+        log(`   Embedding lookup initialized`, 'pass');
         
         // Test 2: Single token lookup
         log('\n--- Test 2: Single Token Lookup ---', 'header');
@@ -193,7 +193,7 @@
         // F16 has ~3 decimal digits of precision
         const singleMatch = Math.abs(singleResult[0] - expectedFirst) < 0.001 &&
                            Math.abs(singleResult[1] - expectedSecond) < 0.001;
-        log(`  ${singleMatch ? '✅ PASS' : '❌ FAIL'}`, singleMatch ? 'pass' : 'fail');
+        log(`  ${singleMatch ? ' PASS' : ' FAIL'}`, singleMatch ? 'pass' : 'fail');
         
         outputBuffer.destroy();
         
@@ -215,11 +215,11 @@
           const actual = batchResult[i * TEST_HIDDEN_SIZE];
           const match = Math.abs(actual - expected) < 0.001;
           
-          log(`  Token ${tokenId}: output[0]=${actual.toFixed(4)} (expected: ~${expected.toFixed(4)}) ${match ? '✅' : '❌'}`);
+          log(`  Token ${tokenId}: output[0]=${actual.toFixed(4)} (expected: ~${expected.toFixed(4)}) ${match ? '' : ''}`);
           if (!match) batchMatch = false;
         }
         
-        log(`  ${batchMatch ? '✅ PASS' : '❌ FAIL'}`, batchMatch ? 'pass' : 'fail');
+        log(`  ${batchMatch ? ' PASS' : ' FAIL'}`, batchMatch ? 'pass' : 'fail');
         
         batchOutput.destroy();
         
@@ -252,7 +252,7 @@
         
         const edgeMatch = Math.abs(firstResult[0] - firstExpected) < 0.001 &&
                          Math.abs(lastResult[0] - lastExpected) < 0.01;
-        log(`  ${edgeMatch ? '✅ PASS' : '❌ FAIL'}`, edgeMatch ? 'pass' : 'fail');
+        log(`  ${edgeMatch ? ' PASS' : ' FAIL'}`, edgeMatch ? 'pass' : 'fail');
         
         firstOutput.destroy();
         lastOutput.destroy();
@@ -268,10 +268,10 @@
         log(`  Embedding table: ${(qwenEmbSize / 1024 / 1024).toFixed(1)} MB (F16)`);
         log(`  Output per token: ${(QWEN_HIDDEN_SIZE * 4 / 1024).toFixed(1)} KB (F32)`);
         
-        log('\n✅ All tests complete!', 'pass');
+        log('\n All tests complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -370,10 +370,10 @@
         outputBuffer.destroy();
         embBuffer.destroy();
         
-        log('\n✅ Benchmark complete!', 'pass');
+        log('\n Benchmark complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }

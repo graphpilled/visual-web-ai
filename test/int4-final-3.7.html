@@ -13,7 +13,7 @@
   </style>
 </head>
 <body>
-  <h1>🔬 INT4 - Hunting the Final 3.7%</h1>
+  <h1> INT4 - Hunting the Final 3.7%</h1>
   <pre id="output"></pre>
   <script type="module">
     const log = (msg, cls = '') => {
@@ -388,7 +388,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     async function benchmark() {
-      log('=== 🔬 Hunting the Final 3.7% ===\n', 'header');
+      log('===  Hunting the Final 3.7% ===\n', 'header');
       
       const adapter = await navigator.gpu.requestAdapter();
       const device = await adapter.requestDevice({
@@ -513,7 +513,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       
       // Measure ceiling
       const ceiling = await benchPureRead();
-      log(`📊 CEILING (pure read): ${ceiling.time.toFixed(3)}ms | ${ceiling.bw.toFixed(2)} GB/s\n`, 'gold');
+      log(` CEILING (pure read): ${ceiling.time.toFixed(3)}ms | ${ceiling.bw.toFixed(2)} GB/s\n`, 'gold');
       
       const tests = [
         { name: 'V29 (wg=48)', fn: createV29, wg: 48, cols: 1 },
@@ -546,7 +546,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       log(`Gap:      ${(best.time - ceiling.time).toFixed(3)}ms (${((best.time / ceiling.time - 1) * 100).toFixed(2)}%)`);
       
       if (best.time <= ceiling.time * 1.02) {
-        log(`\n🎉 WITHIN 2% OF HARDWARE LIMIT!`, 'gold');
+        log(`\n WITHIN 2% OF HARDWARE LIMIT!`, 'gold');
       }
     }
     

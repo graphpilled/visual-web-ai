@@ -23,7 +23,7 @@
   </style>
 </head>
 <body>
-  <h1>⚡ SiLU + MLP Test</h1>
+  <h1> SiLU + MLP Test</h1>
   <p>Tests SiLU activation and MLP block for Qwen2.5 inference.</p>
   <button onclick="runTests()">Run All Tests</button>
   <button onclick="runBenchmark()">Run Benchmark</button>
@@ -74,7 +74,7 @@
       }
       
       device = await adapter.requestDevice();
-      log('✅ WebGPU initialized', 'pass');
+      log(' WebGPU initialized', 'pass');
       return device;
     }
 
@@ -181,7 +181,7 @@
         
         const siluCompare = compareArrays(siluExpected, siluResult);
         log(`  Max diff: ${siluCompare.maxDiff.toExponential(2)}`);
-        log(`  ${siluCompare.match ? '✅ PASS' : '❌ FAIL'}`, siluCompare.match ? 'pass' : 'fail');
+        log(`  ${siluCompare.match ? ' PASS' : ' FAIL'}`, siluCompare.match ? 'pass' : 'fail');
         
         // Test specific values
         log(`\n  Sample values:`);
@@ -256,7 +256,7 @@
         
         const siluMulCompare = compareArrays(siluMulExpected, siluMulResult);
         log(`  Max diff: ${siluMulCompare.maxDiff.toExponential(2)}`);
-        log(`  ${siluMulCompare.match ? '✅ PASS' : '❌ FAIL'}`, siluMulCompare.match ? 'pass' : 'fail');
+        log(`  ${siluMulCompare.match ? ' PASS' : ' FAIL'}`, siluMulCompare.match ? 'pass' : 'fail');
         
         gateBuffer.destroy();
         upBuffer.destroy();
@@ -332,7 +332,7 @@
           }
         }
         
-        log(`  Random sample check: ${fullMatch ? '✅ PASS' : '❌ FAIL'}`, fullMatch ? 'pass' : 'fail');
+        log(`  Random sample check: ${fullMatch ? ' PASS' : ' FAIL'}`, fullMatch ? 'pass' : 'fail');
         
         fullGateBuffer.destroy();
         fullUpBuffer.destroy();
@@ -348,17 +348,17 @@
         await mlp.init();
         
         const buffers = mlp.getBuffers();
-        log(`  Gate buffer: ${buffers.gate ? '✅' : '❌'}`);
-        log(`  Up buffer: ${buffers.up ? '✅' : '❌'}`);
-        log(`  Hidden buffer: ${buffers.hidden ? '✅' : '❌'}`);
-        log(`  ✅ MLP Block initialized`, 'pass');
+        log(`  Gate buffer: ${buffers.gate ? '' : ''}`);
+        log(`  Up buffer: ${buffers.up ? '' : ''}`);
+        log(`  Hidden buffer: ${buffers.hidden ? '' : ''}`);
+        log(`   MLP Block initialized`, 'pass');
         
         mlp.destroy();
         
-        log('\n✅ All tests complete!', 'pass');
+        log('\n All tests complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
@@ -445,7 +445,7 @@
         log(`  Average: ${(avgTime * 1000).toFixed(2)} µs`);
         log(`  Bandwidth: ${bandwidth.toFixed(2)} GB/s`);
         
-        log(`\n📊 Context:`, 'info');
+        log(`\n Context:`, 'info');
         log(`  SiLU+Mul runs once per layer (28 total)`);
         log(`  At ${(avgTime * 1000).toFixed(2)} µs each = ${(avgTime * 28).toFixed(2)} ms total`);
         log(`  This is ~${(avgTime * 28 / 310 * 100).toFixed(1)}% of INT4 matmul time`);
@@ -455,10 +455,10 @@
         upBuffer.destroy();
         outputBuffer.destroy();
         
-        log('\n✅ Benchmark complete!', 'pass');
+        log('\n Benchmark complete!', 'pass');
         
       } catch (e) {
-        log(`\n❌ Error: ${e.message}`, 'fail');
+        log(`\n Error: ${e.message}`, 'fail');
         console.error(e);
       }
     }
