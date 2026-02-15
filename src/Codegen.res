@@ -1102,6 +1102,50 @@ ${mainEnd}`
 }
 
 // ----------------------------------------
+// Dropout (hash-based PRNG, inverted dropout scaling)
+// ----------------------------------------
+let genDropoutKernel = (size: int, rate: float): kernel => {
+  let scale = 1.0 /. (1.0 -. rate)
+  let threshold = 1.0 -. rate
+  let wgsl = `${storageBuffer(0, "input0", ReadOnly)}
+${storageBuffer(1, "seed", ReadOnly)}
+${storageBuffer(2, "output", ReadWrite)}
+
+// PCG-style hash for deterministic pseudo-random per element
+fn pcg_hash(v: u32) -> u32 {
+  var state = v * 747796405u + 2891336453u;
+  var word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
+}
+
+fn rand_f32(global_idx: u32, seed_val: u32) -> f32 {
+  let h = pcg_hash(global_idx ^ seed_val);
+  return f32(h) / 4294967295.0;
+}
+
+${mainSignature}
+  if (idx >= ${Int.toString(size)}u) { return; }
+  let seed_val = bitcast<u32>(seed[0]);
+  let r = rand_f32(idx, seed_val);
+  if (r < ${Float.toString(threshold)}) {
+    output[idx] = input0[idx] * ${Float.toString(scale)};
+  } else {
+    output[idx] = 0.0;
+  }
+${mainEnd}`
+
+  {
+    name: "dropout_" ++ Int.toString(size),
+    wgsl,
+    bindings: [
+      {binding: 0, size: size * 4, usage: ReadOnly, name: "input0"},
+      {binding: 1, size: 4, usage: ReadOnly, name: "seed"},
+      {binding: 2, size: size * 4, usage: ReadWrite, name: "output"},
+    ],
+  }
+}
+
+// ----------------------------------------
 // Binary Operations with Broadcasting
 // ----------------------------------------
 let genBinaryBroadcastKernel = (op: op, inputShape0: shape, inputShape1: shape, outputShape: shape): option<kernel> => {
@@ -3167,6 +3211,12 @@ let generate = (op: op, inputShapes: array<shape>): option<(kernel, dispatch)> =
     | ReLU | LeakyReLU(_) | ELU(_) | Sigmoid | GeLU | SiLU | Mish
     | Softplus | Softsign | Not | Identity =>
       genUnaryKernel(op, outSize)->Option.map(k => (k, computeDispatch(outSize, k.name, 0)))
+
+    // Dropout (inverted dropout with PRNG)
+    | Dropout({rate}) => {
+        let kernel = genDropoutKernel(outSize, rate)
+        Some((kernel, computeDispatch(outSize, kernel.name, 0)))
+      }
     
     // Element-wise binary (with broadcasting support)
     | Add | Sub | Mul | Div | Pow | Mod | FloorDiv
