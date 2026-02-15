@@ -593,7 +593,7 @@
             gh.textContent = d.n;
             gh.classList.add("v");
             cva.classList.add("da");
-            e.dataTransfer.setDragImage(new Image(), 0, 0);
+            const img = document.createElement("canvas"); img.width = 1; img.height = 1; e.dataTransfer.setDragImage(img, 0, 0);
           });
           sb.appendChild(el);
         });
