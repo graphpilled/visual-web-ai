@@ -1,708 +1,1881 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>visual-web-ai — Block Builder</title>
-<link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
-<style>
-:root{--bg:#08080d;--s:#0f0f18;--s2:#161622;--bd:rgba(255,255,255,.05);--t:#e4e4ec;--td:rgba(255,255,255,.4);--tm:rgba(255,255,255,.2);--blue:#5b8aff;--green:#34d399;--orange:#f59e0b;--red:#f87171;--purple:#a78bfa;--cyan:#22d3ee;--mono:'Azeret Mono',monospace}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:var(--mono);background:var(--bg);color:var(--t);overflow:hidden;height:100vh}
-.app{display:grid;grid-template-columns:210px 1fr 380px;grid-template-rows:42px 1fr;height:100vh}
-.topbar{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;padding:0 16px;background:var(--s);border-bottom:1px solid var(--bd);z-index:100}
-.logo{font-size:12px;font-weight:600}.logo span{color:var(--blue)}
-.logo a{color:var(--t);text-decoration:none;margin-right:6px;opacity:.4;transition:opacity .15s}.logo a:hover{opacity:1}
-.info{font-size:9px;color:var(--td);display:flex;gap:14px;align-items:center}
-.dot{width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;margin-right:5px;animation:p 2s ease infinite}
-@keyframes p{0%,100%{opacity:1}50%{opacity:.3}}
-.acts{display:flex;gap:6px}
-.btn{font-family:var(--mono);font-size:9px;padding:5px 12px;border-radius:5px;border:1px solid var(--bd);background:0 0;color:var(--td);cursor:pointer;text-decoration:none;transition:all .15s}
-.btn:hover{border-color:rgba(255,255,255,.12);color:var(--t)}
-.btn.pri{background:var(--blue);border-color:var(--blue);color:#fff}
-.sidebar{background:var(--s);border-right:1px solid var(--bd);overflow-y:auto;padding:8px 0}
-.sidebar::-webkit-scrollbar{width:2px}.sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08)}
-.shdr{font-size:8px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--tm);padding:10px 12px 4px}
-.bi{display:flex;align-items:center;gap:8px;padding:5px 12px;cursor:grab;transition:background .12s;user-select:none}
-.bi:hover{background:rgba(255,255,255,.03)}.bi:active{cursor:grabbing}
-.bic{width:22px;height:22px;border-radius:4px;display:grid;place-items:center;font-size:10px;flex-shrink:0}
-.bin{font-size:10px;font-weight:500}
-.cv{position:relative;overflow:hidden}
-#c{width:100%;height:100%;display:block}
-.hint{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--tm);background:rgba(0,0,0,.5);padding:5px 14px;border-radius:100px;border:1px solid var(--bd);pointer-events:none;transition:opacity .4s}
-.di{position:absolute;inset:0;border:2px dashed rgba(91,138,255,.25);background:rgba(91,138,255,.02);pointer-events:none;opacity:0;transition:opacity .2s;z-index:10}
-.da .di{opacity:1}.da .hint{opacity:0}
-.cp{background:var(--s);border-left:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden}
-.tabs{display:flex;border-bottom:1px solid var(--bd);background:var(--s2);flex-shrink:0}
-.tab{font-family:var(--mono);font-size:9px;font-weight:500;padding:8px 14px;cursor:pointer;color:var(--tm);border:none;border-bottom:2px solid transparent;background:0 0;transition:all .15s}
-.tab:hover{color:var(--td)}.tab.on{color:var(--blue);border-bottom-color:var(--blue)}
-.cc{flex:1;overflow-y:auto;padding:16px}.cc::-webkit-scrollbar{width:3px}.cc::-webkit-scrollbar-thumb{background:rgba(255,255,255,.06)}
-.cc pre{font-family:var(--mono);font-size:10.5px;line-height:1.75;color:var(--td);white-space:pre-wrap;word-break:break-all}
-.cc .kw{color:var(--blue)}.cc .fn{color:var(--orange)}.cc .str{color:var(--green)}.cc .num{color:var(--purple)}
-.cc .cm{color:var(--tm);font-style:italic}.cc .type{color:var(--cyan)}.cc .dim{color:var(--red)}
-.pbar{flex-shrink:0;padding:10px 16px;border-top:1px solid var(--bd);background:var(--s2);display:flex;gap:14px}
-.ps{font-size:9px;color:var(--tm)}.ps strong{color:var(--td);font-weight:500}
-.ghost{position:fixed;pointer-events:none;z-index:10000;font-size:10px;padding:6px 12px;border-radius:6px;border:1px solid var(--blue);background:rgba(91,138,255,.15);color:var(--blue);backdrop-filter:blur(8px);opacity:0;transition:opacity .12s;white-space:nowrap}
-.ghost.v{opacity:1}
-@media(max-width:900px){.app{grid-template-columns:1fr;grid-template-rows:42px 1fr 40vh}.sidebar{display:none}}
-</style>
-</head>
-<body>
-<div class="app">
-<div class="topbar">
-<div class="logo"><a href="index.html">←</a> visual<span>-web-</span>ai</div>
-<div class="info"><span><span class="dot"></span>WebGPU</span><span id="bc">0 blocks</span></div>
-<div class="acts">
-<button class="btn" id="btnClear">Clear</button>
-<button class="btn" id="btnEx">CNN</button>
-<button class="btn" id="btnTx">Transformer</button>
-<button class="btn" id="btnAe">Autoencoder</button>
-<button class="btn" id="btnLstm">LSTM Seq</button>
-<a href="https://github.com/graphpilled/visual-web-ai" class="btn pri" target="_blank">Source</a>
-</div>
-</div>
-<div class="sidebar" id="sb"></div>
-<div class="cv" id="cva">
-<canvas id="c"></canvas>
-<div class="di"></div>
-<div class="hint" id="hint">drag blocks from the left to build a network · right-click to orbit</div>
-</div>
-<div class="cp">
-<div class="tabs">
-<button class="tab on" data-t="hl">nn.js</button>
-<button class="tab" data-t="rs">ReScript</button>
-<button class="tab" data-t="wg">WGSL</button>
-<button class="tab" data-t="dp">Dispatch</button>
-</div>
-<div class="cc"><pre id="co"><span class="cm">// drag blocks to see generated code</span></pre></div>
-<div class="pbar">
-<div class="ps">Kernels: <strong id="sk">0</strong></div>
-<div class="ps">Buffers: <strong id="sb2">0</strong></div>
-<div class="ps">VRAM: <strong id="sv">0 B</strong></div>
-</div>
-</div>
-</div>
-<div class="ghost" id="gh"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script>
-const BD={
-input:{n:'Input',cat:'io',col:'#5b8aff',ico:'⊳',g:[1.6,.45,.8],p:{shape:[1,28,28]}},
-linear:{n:'Linear',cat:'la',col:'#f59e0b',ico:'W',g:[1.5,.65,.8],p:{units:128}},
-embedding:{n:'Embedding',cat:'la',col:'#f59e0b',ico:'E',g:[1.7,.55,.8],p:{vocab:50000,dim:512}},
-matmul:{n:'MatMul',cat:'la',col:'#f59e0b',ico:'×',g:[1.3,.65,.8],p:{}},
-relu:{n:'ReLU',cat:'act',col:'#34d399',ico:'⌐',g:[1.2,.7,.8],p:{}},
-gelu:{n:'GeLU',cat:'act',col:'#34d399',ico:'∿',g:[1.2,.7,.8],p:{}},
-sigmoid:{n:'Sigmoid',cat:'act',col:'#34d399',ico:'σ',g:[1.2,.7,.8],p:{}},
-tanh:{n:'Tanh',cat:'act',col:'#34d399',ico:'~',g:[1.2,.7,.8],p:{}},
-softmax:{n:'Softmax',cat:'act',col:'#34d399',ico:'∑',g:[1.4,.7,.8],p:{axis:-1}},
-silu:{n:'SiLU',cat:'act',col:'#34d399',ico:'ψ',g:[1.2,.7,.8],p:{}},
-conv2d:{n:'Conv2D',cat:'conv',col:'#f87171',ico:'▦',g:[1.3,.85,1.3],p:{filters:64,kernel:3,stride:1}},
-maxpool:{n:'MaxPool2D',cat:'conv',col:'#f87171',ico:'↓',g:[1.0,.7,1.0],p:{kernel:2,stride:2}},
-layernorm:{n:'LayerNorm',cat:'norm',col:'#a78bfa',ico:'μ',g:[1.2,.7,.8],p:{eps:1e-5}},
-batchnorm:{n:'BatchNorm',cat:'norm',col:'#a78bfa',ico:'β',g:[1.2,.7,.8],p:{eps:1e-5}},
-rmsnorm:{n:'RMSNorm',cat:'norm',col:'#a78bfa',ico:'ρ',g:[1.0,.7,.8],p:{eps:1e-5}},
-attention:{n:'Attention',cat:'attn',col:'#22d3ee',ico:'◉',g:[1.9,.95,1.1],p:{heads:8,dim:512,causal:true}},
-reduce_sum:{n:'Sum',cat:'red',col:'#fb923c',ico:'Σ',g:[.8,.7,.8],p:{axes:[-1]}},
-flatten:{n:'Flatten',cat:'shp',col:'#94a3b8',ico:'▬',g:[1.5,.2,.8],p:{}},
-dropout:{n:'Dropout',cat:'reg',col:'#6b7280',ico:'◌',g:[1.0,.6,.8],p:{rate:.1}},
-crossentropy:{n:'CrossEntropy',cat:'loss',col:'#ef4444',ico:'',g:[1.3,.65,.8],p:{}},
-lstm:{n:'LSTM',cat:'rnn',col:'#e879f9',ico:'⟲',g:[1.5,.8,.9],p:{hidden:256}}
-};
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>visual-web-ai — Block Builder</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #08080d;
+        --s: #0f0f18;
+        --s2: #161622;
+        --bd: rgba(255, 255, 255, 0.05);
+        --t: #e4e4ec;
+        --td: rgba(255, 255, 255, 0.4);
+        --tm: rgba(255, 255, 255, 0.2);
+        --blue: #5b8aff;
+        --green: #34d399;
+        --orange: #f59e0b;
+        --red: #f87171;
+        --purple: #a78bfa;
+        --cyan: #22d3ee;
+        --mono: "Azeret Mono", monospace;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: var(--mono);
+        background: var(--bg);
+        color: var(--t);
+        overflow: hidden;
+        height: 100vh;
+      }
+      .app {
+        display: grid;
+        grid-template-columns: 210px 1fr 380px;
+        grid-template-rows: 42px 1fr;
+        height: 100vh;
+      }
+      .topbar {
+        grid-column: 1/-1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 16px;
+        background: var(--s);
+        border-bottom: 1px solid var(--bd);
+        z-index: 100;
+      }
+      .logo {
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .logo span {
+        color: var(--blue);
+      }
+      .logo a {
+        color: var(--t);
+        text-decoration: none;
+        margin-right: 6px;
+        opacity: 0.4;
+        transition: opacity 0.15s;
+      }
+      .logo a:hover {
+        opacity: 1;
+      }
+      .info {
+        font-size: 9px;
+        color: var(--td);
+        display: flex;
+        gap: 14px;
+        align-items: center;
+      }
+      .dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--green);
+        display: inline-block;
+        margin-right: 5px;
+        animation: p 2s ease infinite;
+      }
+      @keyframes p {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+      }
+      .acts {
+        display: flex;
+        gap: 6px;
+      }
+      .btn {
+        font-family: var(--mono);
+        font-size: 9px;
+        padding: 5px 12px;
+        border-radius: 5px;
+        border: 1px solid var(--bd);
+        background: 0 0;
+        color: var(--td);
+        cursor: pointer;
+        text-decoration: none;
+        transition: all 0.15s;
+      }
+      .btn:hover {
+        border-color: rgba(255, 255, 255, 0.12);
+        color: var(--t);
+      }
+      .btn.pri {
+        background: var(--blue);
+        border-color: var(--blue);
+        color: #fff;
+      }
+      .sidebar {
+        background: var(--s);
+        border-right: 1px solid var(--bd);
+        overflow-y: auto;
+        padding: 8px 0;
+      }
+      .sidebar::-webkit-scrollbar {
+        width: 2px;
+      }
+      .sidebar::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .shdr {
+        font-size: 8px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--tm);
+        padding: 10px 12px 4px;
+      }
+      .bi {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 12px;
+        cursor: grab;
+        transition: background 0.12s;
+        user-select: none;
+      }
+      .bi:hover {
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .bi:active {
+        cursor: grabbing;
+      }
+      .bic {
+        width: 22px;
+        height: 22px;
+        border-radius: 4px;
+        display: grid;
+        place-items: center;
+        font-size: 10px;
+        flex-shrink: 0;
+      }
+      .bin {
+        font-size: 10px;
+        font-weight: 500;
+      }
+      .cv {
+        position: relative;
+        overflow: hidden;
+      }
+      #c {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .hint {
+        position: absolute;
+        bottom: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 9px;
+        color: var(--tm);
+        background: rgba(0, 0, 0, 0.5);
+        padding: 5px 14px;
+        border-radius: 100px;
+        border: 1px solid var(--bd);
+        pointer-events: none;
+        transition: opacity 0.4s;
+      }
+      .di {
+        position: absolute;
+        inset: 0;
+        border: 2px dashed rgba(91, 138, 255, 0.25);
+        background: rgba(91, 138, 255, 0.02);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.2s;
+        z-index: 10;
+      }
+      .da .di {
+        opacity: 1;
+      }
+      .da .hint {
+        opacity: 0;
+      }
+      .cp {
+        background: var(--s);
+        border-left: 1px solid var(--bd);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .tabs {
+        display: flex;
+        border-bottom: 1px solid var(--bd);
+        background: var(--s2);
+        flex-shrink: 0;
+      }
+      .tab {
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 500;
+        padding: 8px 14px;
+        cursor: pointer;
+        color: var(--tm);
+        border: none;
+        border-bottom: 2px solid transparent;
+        background: 0 0;
+        transition: all 0.15s;
+      }
+      .tab:hover {
+        color: var(--td);
+      }
+      .tab.on {
+        color: var(--blue);
+        border-bottom-color: var(--blue);
+      }
+      .cc {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+      }
+      .cc::-webkit-scrollbar {
+        width: 3px;
+      }
+      .cc::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .cc pre {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        line-height: 1.75;
+        color: var(--td);
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .cc .kw {
+        color: var(--blue);
+      }
+      .cc .fn {
+        color: var(--orange);
+      }
+      .cc .str {
+        color: var(--green);
+      }
+      .cc .num {
+        color: var(--purple);
+      }
+      .cc .cm {
+        color: var(--tm);
+        font-style: italic;
+      }
+      .cc .type {
+        color: var(--cyan);
+      }
+      .cc .dim {
+        color: var(--red);
+      }
+      .pbar {
+        flex-shrink: 0;
+        padding: 10px 16px;
+        border-top: 1px solid var(--bd);
+        background: var(--s2);
+        display: flex;
+        gap: 14px;
+      }
+      .ps {
+        font-size: 9px;
+        color: var(--tm);
+      }
+      .ps strong {
+        color: var(--td);
+        font-weight: 500;
+      }
+      .ghost {
+        position: fixed;
+        pointer-events: none;
+        z-index: 10000;
+        font-size: 10px;
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: 1px solid var(--blue);
+        background: rgba(91, 138, 255, 0.15);
+        color: var(--blue);
+        backdrop-filter: blur(8px);
+        opacity: 0;
+        transition: opacity 0.12s;
+        white-space: nowrap;
+      }
+      .ghost.v {
+        opacity: 1;
+      }
+      @media (max-width: 900px) {
+        .app {
+          grid-template-columns: 1fr;
+          grid-template-rows: 42px 1fr 40vh;
+        }
+        .sidebar {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="topbar">
+        <div class="logo">
+          <a href="index.html">←</a> visual<span>-web-</span>ai
+        </div>
+        <div class="info">
+          <span><span class="dot"></span>WebGPU</span
+          ><span id="bc">0 blocks</span>
+        </div>
+        <div class="acts">
+          <button class="btn" id="btnClear">Clear</button>
+          <button class="btn" id="btnEx">CNN</button>
+          <button class="btn" id="btnTx">Transformer</button>
+          <button class="btn" id="btnAe">Autoencoder</button>
+          <button class="btn" id="btnLstm">LSTM Seq</button>
+          <a
+            href="https://github.com/graphpilled/visual-web-ai"
+            class="btn pri"
+            target="_blank"
+            >Source</a
+          >
+        </div>
+      </div>
+      <div class="sidebar" id="sb"></div>
+      <div class="cv" id="cva">
+        <canvas id="c"></canvas>
+        <div class="di"></div>
+        <div class="hint" id="hint">
+          drag blocks from the left to build a network · right-click to orbit
+        </div>
+      </div>
+      <div class="cp">
+        <div class="tabs">
+          <button class="tab on" data-t="hl">nn.js</button>
+          <button class="tab" data-t="rs">ReScript</button>
+          <button class="tab" data-t="wg">WGSL</button>
+          <button class="tab" data-t="dp">Dispatch</button>
+        </div>
+        <div class="cc">
+          <pre
+            id="co"
+          ><span class="cm">// drag blocks to see generated code</span></pre>
+        </div>
+        <div class="pbar">
+          <div class="ps">Kernels: <strong id="sk">0</strong></div>
+          <div class="ps">Buffers: <strong id="sb2">0</strong></div>
+          <div class="ps">VRAM: <strong id="sv">0 B</strong></div>
+        </div>
+      </div>
+    </div>
+    <div class="ghost" id="gh"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+      const BD = {
+        input: {
+          n: "Input",
+          cat: "io",
+          col: "#5b8aff",
+          ico: "⊳",
+          g: [1.6, 0.45, 0.8],
+          p: { shape: [1, 28, 28] },
+        },
+        linear: {
+          n: "Linear",
+          cat: "la",
+          col: "#f59e0b",
+          ico: "W",
+          g: [1.5, 0.65, 0.8],
+          p: { units: 128 },
+        },
+        embedding: {
+          n: "Embedding",
+          cat: "la",
+          col: "#f59e0b",
+          ico: "E",
+          g: [1.7, 0.55, 0.8],
+          p: { vocab: 50000, dim: 512 },
+        },
+        matmul: {
+          n: "MatMul",
+          cat: "la",
+          col: "#f59e0b",
+          ico: "×",
+          g: [1.3, 0.65, 0.8],
+          p: {},
+        },
+        relu: {
+          n: "ReLU",
+          cat: "act",
+          col: "#34d399",
+          ico: "⌐",
+          g: [1.2, 0.7, 0.8],
+          p: {},
+        },
+        gelu: {
+          n: "GeLU",
+          cat: "act",
+          col: "#34d399",
+          ico: "∿",
+          g: [1.2, 0.7, 0.8],
+          p: {},
+        },
+        sigmoid: {
+          n: "Sigmoid",
+          cat: "act",
+          col: "#34d399",
+          ico: "σ",
+          g: [1.2, 0.7, 0.8],
+          p: {},
+        },
+        tanh: {
+          n: "Tanh",
+          cat: "act",
+          col: "#34d399",
+          ico: "~",
+          g: [1.2, 0.7, 0.8],
+          p: {},
+        },
+        softmax: {
+          n: "Softmax",
+          cat: "act",
+          col: "#34d399",
+          ico: "∑",
+          g: [1.4, 0.7, 0.8],
+          p: { axis: -1 },
+        },
+        silu: {
+          n: "SiLU",
+          cat: "act",
+          col: "#34d399",
+          ico: "ψ",
+          g: [1.2, 0.7, 0.8],
+          p: {},
+        },
+        conv2d: {
+          n: "Conv2D",
+          cat: "conv",
+          col: "#f87171",
+          ico: "▦",
+          g: [1.3, 0.85, 1.3],
+          p: { filters: 64, kernel: 3, stride: 1 },
+        },
+        maxpool: {
+          n: "MaxPool2D",
+          cat: "conv",
+          col: "#f87171",
+          ico: "↓",
+          g: [1.0, 0.7, 1.0],
+          p: { kernel: 2, stride: 2 },
+        },
+        layernorm: {
+          n: "LayerNorm",
+          cat: "norm",
+          col: "#a78bfa",
+          ico: "μ",
+          g: [1.2, 0.7, 0.8],
+          p: { eps: 1e-5 },
+        },
+        batchnorm: {
+          n: "BatchNorm",
+          cat: "norm",
+          col: "#a78bfa",
+          ico: "β",
+          g: [1.2, 0.7, 0.8],
+          p: { eps: 1e-5 },
+        },
+        rmsnorm: {
+          n: "RMSNorm",
+          cat: "norm",
+          col: "#a78bfa",
+          ico: "ρ",
+          g: [1.0, 0.7, 0.8],
+          p: { eps: 1e-5 },
+        },
+        attention: {
+          n: "Attention",
+          cat: "attn",
+          col: "#22d3ee",
+          ico: "◉",
+          g: [1.9, 0.95, 1.1],
+          p: { heads: 8, dim: 512, causal: true },
+        },
+        reduce_sum: {
+          n: "Sum",
+          cat: "red",
+          col: "#fb923c",
+          ico: "Σ",
+          g: [0.8, 0.7, 0.8],
+          p: { axes: [-1] },
+        },
+        flatten: {
+          n: "Flatten",
+          cat: "shp",
+          col: "#94a3b8",
+          ico: "▬",
+          g: [1.5, 0.2, 0.8],
+          p: {},
+        },
+        dropout: {
+          n: "Dropout",
+          cat: "reg",
+          col: "#6b7280",
+          ico: "◌",
+          g: [1.0, 0.6, 0.8],
+          p: { rate: 0.1 },
+        },
+        crossentropy: {
+          n: "CrossEntropy",
+          cat: "loss",
+          col: "#ef4444",
+          ico: "",
+          g: [1.3, 0.65, 0.8],
+          p: {},
+        },
+        lstm: {
+          n: "LSTM",
+          cat: "rnn",
+          col: "#e879f9",
+          ico: "⟲",
+          g: [1.5, 0.8, 0.9],
+          p: { hidden: 256 },
+        },
+      };
 
-const CATS=[
-['io','Input/Output',['input']],
-['la','Linear Algebra',['linear','matmul','embedding']],
-['act','Activations',['relu','gelu','sigmoid','tanh','softmax','silu']],
-['conv','Convolution',['conv2d','maxpool']],
-['norm','Normalization',['layernorm','batchnorm','rmsnorm']],
-['attn','Attention',['attention']],
-['red','Reduction',['reduce_sum']],
-['shp','Shape',['flatten']],
-['reg','Regularization',['dropout']],
-['rnn','Recurrent',['lstm']],
-['loss','Loss',['crossentropy']]
-];
+      const CATS = [
+        ["io", "Input/Output", ["input"]],
+        ["la", "Linear Algebra", ["linear", "matmul", "embedding"]],
+        [
+          "act",
+          "Activations",
+          ["relu", "gelu", "sigmoid", "tanh", "softmax", "silu"],
+        ],
+        ["conv", "Convolution", ["conv2d", "maxpool"]],
+        ["norm", "Normalization", ["layernorm", "batchnorm", "rmsnorm"]],
+        ["attn", "Attention", ["attention"]],
+        ["red", "Reduction", ["reduce_sum"]],
+        ["shp", "Shape", ["flatten"]],
+        ["reg", "Regularization", ["dropout"]],
+        ["rnn", "Recurrent", ["lstm"]],
+        ["loss", "Loss", ["crossentropy"]],
+      ];
 
-let blocks=[],conns=[],nid=0,tab='hl',dragging=null;
+      let blocks = [],
+        conns = [],
+        nid = 0,
+        tab = "hl",
+        dragging = null;
 
-// Sidebar
-const sb=document.getElementById('sb');
-CATS.forEach(([k,label,ids])=>{
-let h=document.createElement('div');h.className='shdr';h.textContent=label;sb.appendChild(h);
-ids.forEach(id=>{
-const d=BD[id];
-let el=document.createElement('div');el.className='bi';el.draggable=true;el.dataset.t=id;
-el.innerHTML=`<div class="bic" style="background:${d.col}22;color:${d.col}">${d.ico}</div><div class="bin">${d.n}</div>`;
-el.addEventListener('dragstart',e=>{dragging=id;gh.textContent=d.n;gh.classList.add('v');cva.classList.add('da');e.dataTransfer.setDragImage(new Image(),0,0)});
-sb.appendChild(el);
-})});
+      // Sidebar
+      const sb = document.getElementById("sb");
+      CATS.forEach(([k, label, ids]) => {
+        let h = document.createElement("div");
+        h.className = "shdr";
+        h.textContent = label;
+        sb.appendChild(h);
+        ids.forEach((id) => {
+          const d = BD[id];
+          let el = document.createElement("div");
+          el.className = "bi";
+          el.draggable = true;
+          el.dataset.t = id;
+          el.innerHTML = `<div class="bic" style="background:${d.col}22;color:${d.col}">${d.ico}</div><div class="bin">${d.n}</div>`;
+          el.addEventListener("dragstart", (e) => {
+            dragging = id;
+            gh.textContent = d.n;
+            gh.classList.add("v");
+            cva.classList.add("da");
+            e.dataTransfer.setDragImage(new Image(), 0, 0);
+          });
+          sb.appendChild(el);
+        });
+      });
 
-// Three.js
-const canvas=document.getElementById('c'),cva=document.getElementById('cva'),gh=document.getElementById('gh');
-const scene=new THREE.Scene();scene.background=new THREE.Color(0x08080d);
-const cam=new THREE.PerspectiveCamera(50,1,.1,500);cam.position.set(0,8,14);cam.lookAt(0,0,0);
-const ren=new THREE.WebGLRenderer({canvas,antialias:true});ren.setPixelRatio(Math.min(devicePixelRatio,2));
+      // Three.js
+      const canvas = document.getElementById("c"),
+        cva = document.getElementById("cva"),
+        gh = document.getElementById("gh");
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x08080d);
+      const cam = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
+      cam.position.set(0, 8, 14);
+      cam.lookAt(0, 0, 0);
+      const ren = new THREE.WebGLRenderer({ canvas, antialias: true });
+      ren.setPixelRatio(Math.min(devicePixelRatio, 2));
 
-scene.add(new THREE.AmbientLight(0x404060,.7));
-const dl=new THREE.DirectionalLight(0xffffff,.8);dl.position.set(5,12,8);scene.add(dl);
-const bl2=new THREE.DirectionalLight(0x5b8aff,.2);bl2.position.set(-5,5,-8);scene.add(bl2);
-scene.add(new THREE.GridHelper(24,24,0x1a1a30,0x111120));
+      scene.add(new THREE.AmbientLight(0x404060, 0.7));
+      const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+      dl.position.set(5, 12, 8);
+      scene.add(dl);
+      const bl2 = new THREE.DirectionalLight(0x5b8aff, 0.2);
+      bl2.position.set(-5, 5, -8);
+      scene.add(bl2);
+      scene.add(new THREE.GridHelper(24, 24, 0x1a1a30, 0x111120));
 
-const gnd=new THREE.Mesh(new THREE.PlaneGeometry(40,40),new THREE.MeshBasicMaterial({visible:false}));
-gnd.rotation.x=-Math.PI/2;gnd.position.y=-.01;scene.add(gnd);
+      const gnd = new THREE.Mesh(
+        new THREE.PlaneGeometry(40, 40),
+        new THREE.MeshBasicMaterial({ visible: false }),
+      );
+      gnd.rotation.x = -Math.PI / 2;
+      gnd.position.y = -0.01;
+      scene.add(gnd);
 
-// ============================================================
-// SHAPE BUILDERS — unique 3D geometry per algorithm type
-// ============================================================
+      // ============================================================
+      // SHAPE BUILDERS — unique 3D geometry per algorithm type
+      // ============================================================
 
-function mkLabel(text, h) {
-  const lc=document.createElement('canvas');lc.width=256;lc.height=64;
-  const cx=lc.getContext('2d');cx.font='500 20px "Azeret Mono",monospace';cx.fillStyle='#fff';cx.textAlign='center';cx.fillText(text,128,38);
-  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(lc),transparent:true,opacity:.8}));
-  s.scale.set(1.5,.37,1);s.position.y=h+.45;
-  return s;
-}
+      function mkLabel(text, h) {
+        const lc = document.createElement("canvas");
+        lc.width = 256;
+        lc.height = 64;
+        const cx = lc.getContext("2d");
+        cx.font = '500 20px "Azeret Mono",monospace';
+        cx.fillStyle = "#fff";
+        cx.textAlign = "center";
+        cx.fillText(text, 128, 38);
+        const s = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: new THREE.CanvasTexture(lc),
+            transparent: true,
+            opacity: 0.8,
+          }),
+        );
+        s.scale.set(1.5, 0.37, 1);
+        s.position.y = h + 0.45;
+        return s;
+      }
 
-function mkInputTensor(col) {
-  // Flat grid of small cubes = a tensor
-  const grp=new THREE.Group();
-  const gc=new THREE.BoxGeometry(.18,.04,.18);
-  for(let r=0;r<4;r++) for(let c=0;c<7;c++){
-    const m=new THREE.Mesh(gc,new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.2),transparent:true,opacity:.85}));
-    m.position.set(c*.22-.66, r*.08, 0);
-    grp.add(m);
-  }
-  return grp;
-}
+      function mkInputTensor(col) {
+        // Flat grid of small cubes = a tensor
+        const grp = new THREE.Group();
+        const gc = new THREE.BoxGeometry(0.18, 0.04, 0.18);
+        for (let r = 0; r < 4; r++)
+          for (let c = 0; c < 7; c++) {
+            const m = new THREE.Mesh(
+              gc,
+              new THREE.MeshPhongMaterial({
+                color: col,
+                emissive: col.clone().multiplyScalar(0.2),
+                transparent: true,
+                opacity: 0.85,
+              }),
+            );
+            m.position.set(c * 0.22 - 0.66, r * 0.08, 0);
+            grp.add(m);
+          }
+        return grp;
+      }
 
-function mkLinearMatrix(col) {
-  // Weight matrix: grid of spheres (dots representing weights)
-  const grp=new THREE.Group();
-  const sg=new THREE.SphereGeometry(.055,8,8);
-  const mat=new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.3)});
-  // Flat base
-  const base=new THREE.Mesh(new THREE.BoxGeometry(1.4,.08,.7),new THREE.MeshPhongMaterial({color:col.clone().multiplyScalar(.3),transparent:true,opacity:.5}));
-  base.position.y=-.02;
-  grp.add(base);
-  for(let r=0;r<4;r++) for(let c=0;c<6;c++){
-    const s=new THREE.Mesh(sg,mat);
-    s.position.set(c*.2-.5, .12+r*.15, (Math.random()-.5)*.2);
-    grp.add(s);
-  }
-  return grp;
-}
+      function mkLinearMatrix(col) {
+        // Weight matrix: grid of spheres (dots representing weights)
+        const grp = new THREE.Group();
+        const sg = new THREE.SphereGeometry(0.055, 8, 8);
+        const mat = new THREE.MeshPhongMaterial({
+          color: col,
+          emissive: col.clone().multiplyScalar(0.3),
+        });
+        // Flat base
+        const base = new THREE.Mesh(
+          new THREE.BoxGeometry(1.4, 0.08, 0.7),
+          new THREE.MeshPhongMaterial({
+            color: col.clone().multiplyScalar(0.3),
+            transparent: true,
+            opacity: 0.5,
+          }),
+        );
+        base.position.y = -0.02;
+        grp.add(base);
+        for (let r = 0; r < 4; r++)
+          for (let c = 0; c < 6; c++) {
+            const s = new THREE.Mesh(sg, mat);
+            s.position.set(
+              c * 0.2 - 0.5,
+              0.12 + r * 0.15,
+              (Math.random() - 0.5) * 0.2,
+            );
+            grp.add(s);
+          }
+        return grp;
+      }
 
-function mkReLU(col) {
-  // The actual ReLU function shape: flat line then ramp up
-  const shape=new THREE.Shape();
-  shape.moveTo(-.6,0);shape.lineTo(0,0);shape.lineTo(.6,.55);shape.lineTo(.6,0);shape.lineTo(-.6,0);
-  const geo=new THREE.ExtrudeGeometry(shape,{depth:.6,bevelEnabled:true,bevelThickness:.03,bevelSize:.03,bevelSegments:2});
-  geo.translate(0,0,-.3);
-  const m=new THREE.Mesh(geo,new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.15),transparent:true,opacity:.9}));
-  return m;
-}
+      function mkReLU(col) {
+        // The actual ReLU function shape: flat line then ramp up
+        const shape = new THREE.Shape();
+        shape.moveTo(-0.6, 0);
+        shape.lineTo(0, 0);
+        shape.lineTo(0.6, 0.55);
+        shape.lineTo(0.6, 0);
+        shape.lineTo(-0.6, 0);
+        const geo = new THREE.ExtrudeGeometry(shape, {
+          depth: 0.6,
+          bevelEnabled: true,
+          bevelThickness: 0.03,
+          bevelSize: 0.03,
+          bevelSegments: 2,
+        });
+        geo.translate(0, 0, -0.3);
+        const m = new THREE.Mesh(
+          geo,
+          new THREE.MeshPhongMaterial({
+            color: col,
+            emissive: col.clone().multiplyScalar(0.15),
+            transparent: true,
+            opacity: 0.9,
+          }),
+        );
+        return m;
+      }
 
-function mkSCurve(col) {
-  // Sigmoid/GeLU/SiLU: an S-curve extruded into 3D
-  const shape=new THREE.Shape();
-  const pts=[];
-  for(let i=0;i<=20;i++){
-    const x=i/20*1.2-.6;
-    const y=1/(1+Math.exp(-x*6))*.55;
-    pts.push(new THREE.Vector2(x,y));
-  }
-  shape.moveTo(-.6,0);
-  pts.forEach(p=>shape.lineTo(p.x,p.y));
-  shape.lineTo(.6,0);shape.lineTo(-.6,0);
-  const geo=new THREE.ExtrudeGeometry(shape,{depth:.55,bevelEnabled:true,bevelThickness:.02,bevelSize:.02,bevelSegments:2});
-  geo.translate(0,0,-.275);
-  return new THREE.Mesh(geo,new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.15),transparent:true,opacity:.9}));
-}
+      function mkSCurve(col) {
+        // Sigmoid/GeLU/SiLU: an S-curve extruded into 3D
+        const shape = new THREE.Shape();
+        const pts = [];
+        for (let i = 0; i <= 20; i++) {
+          const x = (i / 20) * 1.2 - 0.6;
+          const y = (1 / (1 + Math.exp(-x * 6))) * 0.55;
+          pts.push(new THREE.Vector2(x, y));
+        }
+        shape.moveTo(-0.6, 0);
+        pts.forEach((p) => shape.lineTo(p.x, p.y));
+        shape.lineTo(0.6, 0);
+        shape.lineTo(-0.6, 0);
+        const geo = new THREE.ExtrudeGeometry(shape, {
+          depth: 0.55,
+          bevelEnabled: true,
+          bevelThickness: 0.02,
+          bevelSize: 0.02,
+          bevelSegments: 2,
+        });
+        geo.translate(0, 0, -0.275);
+        return new THREE.Mesh(
+          geo,
+          new THREE.MeshPhongMaterial({
+            color: col,
+            emissive: col.clone().multiplyScalar(0.15),
+            transparent: true,
+            opacity: 0.9,
+          }),
+        );
+      }
 
-function mkSoftmax(col) {
-  // Bar chart: probability distribution bars
-  const grp=new THREE.Group();
-  const heights=[.15,.3,.65,.45,.2,.1,.08];
-  heights.forEach((h,i)=>{
-    const g=new THREE.BoxGeometry(.13,h,.4);
-    const m=new THREE.Mesh(g,new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.2),transparent:true,opacity:.85}));
-    m.position.set(i*.18-.54, h/2, 0);
-    grp.add(m);
-  });
-  return grp;
-}
+      function mkSoftmax(col) {
+        // Bar chart: probability distribution bars
+        const grp = new THREE.Group();
+        const heights = [0.15, 0.3, 0.65, 0.45, 0.2, 0.1, 0.08];
+        heights.forEach((h, i) => {
+          const g = new THREE.BoxGeometry(0.13, h, 0.4);
+          const m = new THREE.Mesh(
+            g,
+            new THREE.MeshPhongMaterial({
+              color: col,
+              emissive: col.clone().multiplyScalar(0.2),
+              transparent: true,
+              opacity: 0.85,
+            }),
+          );
+          m.position.set(i * 0.18 - 0.54, h / 2, 0);
+          grp.add(m);
+        });
+        return grp;
+      }
 
-function mkConv2D(col) {
-  // Stacked filter planes with a sliding kernel window
-  const grp=new THREE.Group();
-  const planeMat=new THREE.MeshPhongMaterial({color:col.clone().multiplyScalar(.6),transparent:true,opacity:.3,side:THREE.DoubleSide});
-  for(let i=0;i<3;i++){
-    const p=new THREE.Mesh(new THREE.PlaneGeometry(.9,.9),planeMat);
-    p.position.set(0,i*.2,i*.15-.15);
-    p.rotation.x=-.15;
-    grp.add(p);
-  }
-  // Kernel window highlight (small bright square on top)
-  const kernelGeo=new THREE.BoxGeometry(.35,.35,.06);
-  const kernel=new THREE.Mesh(kernelGeo,new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.5),transparent:true,opacity:.9}));
-  kernel.position.set(-.15,.5,.15);
-  grp.add(kernel);
-  // 3x3 grid dots inside kernel
-  const dg=new THREE.SphereGeometry(.025,6,6);
-  const dm=new THREE.MeshPhongMaterial({color:0xffffff,emissive:0x666666});
-  for(let r=0;r<3;r++) for(let c=0;c<3;c++){
-    const dot=new THREE.Mesh(dg,dm);
-    dot.position.set(-.15+c*.1-.1,.5+r*.1-.1,.18);
-    grp.add(dot);
-  }
-  return grp;
-}
+      function mkConv2D(col) {
+        // Stacked filter planes with a sliding kernel window
+        const grp = new THREE.Group();
+        const planeMat = new THREE.MeshPhongMaterial({
+          color: col.clone().multiplyScalar(0.6),
+          transparent: true,
+          opacity: 0.3,
+          side: THREE.DoubleSide,
+        });
+        for (let i = 0; i < 3; i++) {
+          const p = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9), planeMat);
+          p.position.set(0, i * 0.2, i * 0.15 - 0.15);
+          p.rotation.x = -0.15;
+          grp.add(p);
+        }
+        // Kernel window highlight (small bright square on top)
+        const kernelGeo = new THREE.BoxGeometry(0.35, 0.35, 0.06);
+        const kernel = new THREE.Mesh(
+          kernelGeo,
+          new THREE.MeshPhongMaterial({
+            color: col,
+            emissive: col.clone().multiplyScalar(0.5),
+            transparent: true,
+            opacity: 0.9,
+          }),
+        );
+        kernel.position.set(-0.15, 0.5, 0.15);
+        grp.add(kernel);
+        // 3x3 grid dots inside kernel
+        const dg = new THREE.SphereGeometry(0.025, 6, 6);
+        const dm = new THREE.MeshPhongMaterial({
+          color: 0xffffff,
+          emissive: 0x666666,
+        });
+        for (let r = 0; r < 3; r++)
+          for (let c = 0; c < 3; c++) {
+            const dot = new THREE.Mesh(dg, dm);
+            dot.position.set(-0.15 + c * 0.1 - 0.1, 0.5 + r * 0.1 - 0.1, 0.18);
+            grp.add(dot);
+          }
+        return grp;
+      }
 
-function mkMaxPool(col) {
-  // Downsampling pyramid/funnel
-  const geo=new THREE.CylinderGeometry(.2,.5,.6,4);
-  geo.rotateY(Math.PI/4);
-  const m=new THREE.Mesh(geo,new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.2),transparent:true,opacity:.85}));
-  // Arrow pointing down
-  const ag=new THREE.ConeGeometry(.12,.25,8);
-  const arrow=new THREE.Mesh(ag,new THREE.MeshPhongMaterial({color:0xffffff,emissive:0x444444,transparent:true,opacity:.7}));
-  arrow.position.y=-.05;arrow.rotation.z=Math.PI;
-  const grp=new THREE.Group();grp.add(m);grp.add(arrow);
-  return grp;
-}
+      function mkMaxPool(col) {
+        // Downsampling pyramid/funnel
+        const geo = new THREE.CylinderGeometry(0.2, 0.5, 0.6, 4);
+        geo.rotateY(Math.PI / 4);
+        const m = new THREE.Mesh(
+          geo,
+          new THREE.MeshPhongMaterial({
+            color: col,
+            emissive: col.clone().multiplyScalar(0.2),
+            transparent: true,
+            opacity: 0.85,
+          }),
+        );
+        // Arrow pointing down
+        const ag = new THREE.ConeGeometry(0.12, 0.25, 8);
+        const arrow = new THREE.Mesh(
+          ag,
+          new THREE.MeshPhongMaterial({
+            color: 0xffffff,
+            emissive: 0x444444,
+            transparent: true,
+            opacity: 0.7,
+          }),
+        );
+        arrow.position.y = -0.05;
+        arrow.rotation.z = Math.PI;
+        const grp = new THREE.Group();
+        grp.add(m);
+        grp.add(arrow);
+        return grp;
+      }
 
-function mkNorm(col) {
-  // Gaussian bell curve shape
-  const shape=new THREE.Shape();
-  shape.moveTo(-.6,0);
-  for(let i=0;i<=30;i++){
-    const x=i/30*1.2-.6;
-    const y=Math.exp(-x*x*8)*.55;
-    shape.lineTo(x,y);
-  }
-  shape.lineTo(.6,0);shape.lineTo(-.6,0);
-  const geo=new THREE.ExtrudeGeometry(shape,{depth:.5,bevelEnabled:true,bevelThickness:.02,bevelSize:.02,bevelSegments:2});
-  geo.translate(0,0,-.25);
-  return new THREE.Mesh(geo,new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.15),transparent:true,opacity:.88}));
-}
+      function mkNorm(col) {
+        // Gaussian bell curve shape
+        const shape = new THREE.Shape();
+        shape.moveTo(-0.6, 0);
+        for (let i = 0; i <= 30; i++) {
+          const x = (i / 30) * 1.2 - 0.6;
+          const y = Math.exp(-x * x * 8) * 0.55;
+          shape.lineTo(x, y);
+        }
+        shape.lineTo(0.6, 0);
+        shape.lineTo(-0.6, 0);
+        const geo = new THREE.ExtrudeGeometry(shape, {
+          depth: 0.5,
+          bevelEnabled: true,
+          bevelThickness: 0.02,
+          bevelSize: 0.02,
+          bevelSegments: 2,
+        });
+        geo.translate(0, 0, -0.25);
+        return new THREE.Mesh(
+          geo,
+          new THREE.MeshPhongMaterial({
+            color: col,
+            emissive: col.clone().multiplyScalar(0.15),
+            transparent: true,
+            opacity: 0.88,
+          }),
+        );
+      }
 
-function mkAttention(col) {
-  // Interconnected nodes: multi-head attention visualization
-  const grp=new THREE.Group();
-  const sg=new THREE.SphereGeometry(.09,12,12);
-  const nm=new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.4),shininess:80});
-  // Q, K, V nodes in three rows
-  const nodes=[];
-  const labels=['Q','K','V'];
-  for(let row=0;row<3;row++){
-    for(let i=0;i<4;i++){
-      const s=new THREE.Mesh(sg,nm);
-      s.position.set(i*.35-.52, row*.35-.35, 0);
-      grp.add(s);
-      nodes.push(s.position.clone());
-    }
-  }
-  // Connecting lines (attention pattern)
-  const lm=new THREE.LineBasicMaterial({color:col,transparent:true,opacity:.2});
-  // Connect Q row to K row
-  for(let q=0;q<4;q++) for(let k=0;k<4;k++){
-    const pts=[nodes[q].clone(),nodes[4+k].clone()];
-    grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),lm));
-  }
-  // Connect K row to V row
-  for(let k=0;k<4;k++){
-    const pts=[nodes[4+k].clone(),nodes[8+k].clone()];
-    grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),lm));
-  }
-  // Glass housing
-  const box=new THREE.Mesh(new THREE.BoxGeometry(1.7,.9,.5),new THREE.MeshPhongMaterial({color:col,transparent:true,opacity:.06,side:THREE.DoubleSide}));
-  grp.add(box);
-  return grp;
-}
+      function mkAttention(col) {
+        // Interconnected nodes: multi-head attention visualization
+        const grp = new THREE.Group();
+        const sg = new THREE.SphereGeometry(0.09, 12, 12);
+        const nm = new THREE.MeshPhongMaterial({
+          color: col,
+          emissive: col.clone().multiplyScalar(0.4),
+          shininess: 80,
+        });
+        // Q, K, V nodes in three rows
+        const nodes = [];
+        const labels = ["Q", "K", "V"];
+        for (let row = 0; row < 3; row++) {
+          for (let i = 0; i < 4; i++) {
+            const s = new THREE.Mesh(sg, nm);
+            s.position.set(i * 0.35 - 0.52, row * 0.35 - 0.35, 0);
+            grp.add(s);
+            nodes.push(s.position.clone());
+          }
+        }
+        // Connecting lines (attention pattern)
+        const lm = new THREE.LineBasicMaterial({
+          color: col,
+          transparent: true,
+          opacity: 0.2,
+        });
+        // Connect Q row to K row
+        for (let q = 0; q < 4; q++)
+          for (let k = 0; k < 4; k++) {
+            const pts = [nodes[q].clone(), nodes[4 + k].clone()];
+            grp.add(
+              new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lm),
+            );
+          }
+        // Connect K row to V row
+        for (let k = 0; k < 4; k++) {
+          const pts = [nodes[4 + k].clone(), nodes[8 + k].clone()];
+          grp.add(
+            new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lm),
+          );
+        }
+        // Glass housing
+        const box = new THREE.Mesh(
+          new THREE.BoxGeometry(1.7, 0.9, 0.5),
+          new THREE.MeshPhongMaterial({
+            color: col,
+            transparent: true,
+            opacity: 0.06,
+            side: THREE.DoubleSide,
+          }),
+        );
+        grp.add(box);
+        return grp;
+      }
 
-function mkReduceFunnel(col) {
-  // Cone pointing down: many → one
-  const geo=new THREE.ConeGeometry(.35,.6,6);
-  return new THREE.Mesh(geo,new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.2),transparent:true,opacity:.85}));
-}
+      function mkReduceFunnel(col) {
+        // Cone pointing down: many → one
+        const geo = new THREE.ConeGeometry(0.35, 0.6, 6);
+        return new THREE.Mesh(
+          geo,
+          new THREE.MeshPhongMaterial({
+            color: col,
+            emissive: col.clone().multiplyScalar(0.2),
+            transparent: true,
+            opacity: 0.85,
+          }),
+        );
+      }
 
-function mkFlatten(col) {
-  // Cube being squished into a flat bar
-  const grp=new THREE.Group();
-  // Ghost cube (what it was)
-  const ghost=new THREE.Mesh(new THREE.BoxGeometry(.35,.35,.35),new THREE.MeshPhongMaterial({color:col,transparent:true,opacity:.1,side:THREE.DoubleSide}));
-  ghost.position.set(-.4,.15,0);
-  grp.add(ghost);
-  const eg=new THREE.EdgesGeometry(new THREE.BoxGeometry(.35,.35,.35));
-  const wire=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:col,transparent:true,opacity:.3}));
-  wire.position.copy(ghost.position);
-  grp.add(wire);
-  // Arrow
-  const ag=new THREE.ConeGeometry(.06,.2,6);
-  const arr=new THREE.Mesh(ag,new THREE.MeshPhongMaterial({color:0xffffff,transparent:true,opacity:.5}));
-  arr.rotation.z=-Math.PI/2;arr.position.set(0,.15,0);
-  grp.add(arr);
-  // Flat result bar
-  const bar=new THREE.Mesh(new THREE.BoxGeometry(.8,.08,.35),new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.2),transparent:true,opacity:.85}));
-  bar.position.set(.4,.05,0);
-  grp.add(bar);
-  return grp;
-}
+      function mkFlatten(col) {
+        // Cube being squished into a flat bar
+        const grp = new THREE.Group();
+        // Ghost cube (what it was)
+        const ghost = new THREE.Mesh(
+          new THREE.BoxGeometry(0.35, 0.35, 0.35),
+          new THREE.MeshPhongMaterial({
+            color: col,
+            transparent: true,
+            opacity: 0.1,
+            side: THREE.DoubleSide,
+          }),
+        );
+        ghost.position.set(-0.4, 0.15, 0);
+        grp.add(ghost);
+        const eg = new THREE.EdgesGeometry(
+          new THREE.BoxGeometry(0.35, 0.35, 0.35),
+        );
+        const wire = new THREE.LineSegments(
+          eg,
+          new THREE.LineBasicMaterial({
+            color: col,
+            transparent: true,
+            opacity: 0.3,
+          }),
+        );
+        wire.position.copy(ghost.position);
+        grp.add(wire);
+        // Arrow
+        const ag = new THREE.ConeGeometry(0.06, 0.2, 6);
+        const arr = new THREE.Mesh(
+          ag,
+          new THREE.MeshPhongMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.5,
+          }),
+        );
+        arr.rotation.z = -Math.PI / 2;
+        arr.position.set(0, 0.15, 0);
+        grp.add(arr);
+        // Flat result bar
+        const bar = new THREE.Mesh(
+          new THREE.BoxGeometry(0.8, 0.08, 0.35),
+          new THREE.MeshPhongMaterial({
+            color: col,
+            emissive: col.clone().multiplyScalar(0.2),
+            transparent: true,
+            opacity: 0.85,
+          }),
+        );
+        bar.position.set(0.4, 0.05, 0);
+        grp.add(bar);
+        return grp;
+      }
 
-function mkDropout(col) {
-  // Grid with random holes/gaps
-  const grp=new THREE.Group();
-  const sg=new THREE.BoxGeometry(.12,.12,.12);
-  const mat=new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.15),transparent:true,opacity:.8});
-  const matDead=new THREE.MeshPhongMaterial({color:0x333333,transparent:true,opacity:.15});
-  for(let r=0;r<4;r++) for(let c=0;c<5;c++){
-    const alive=Math.random()>.3;
-    const m=new THREE.Mesh(sg,alive?mat:matDead);
-    m.position.set(c*.18-.36,r*.18-.27,0);
-    if(!alive)m.scale.setScalar(.4);
-    grp.add(m);
-  }
-  return grp;
-}
+      function mkDropout(col) {
+        // Grid with random holes/gaps
+        const grp = new THREE.Group();
+        const sg = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+        const mat = new THREE.MeshPhongMaterial({
+          color: col,
+          emissive: col.clone().multiplyScalar(0.15),
+          transparent: true,
+          opacity: 0.8,
+        });
+        const matDead = new THREE.MeshPhongMaterial({
+          color: 0x333333,
+          transparent: true,
+          opacity: 0.15,
+        });
+        for (let r = 0; r < 4; r++)
+          for (let c = 0; c < 5; c++) {
+            const alive = Math.random() > 0.3;
+            const m = new THREE.Mesh(sg, alive ? mat : matDead);
+            m.position.set(c * 0.18 - 0.36, r * 0.18 - 0.27, 0);
+            if (!alive) m.scale.setScalar(0.4);
+            grp.add(m);
+          }
+        return grp;
+      }
 
-function mkCrossEntropy(col) {
-  // Crosshair / target symbol
-  const grp=new THREE.Group();
-  const rm=new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.3)});
-  // Outer ring
-  const ring=new THREE.Mesh(new THREE.TorusGeometry(.35,.04,8,24),rm);
-  grp.add(ring);
-  // Inner ring
-  const ring2=new THREE.Mesh(new THREE.TorusGeometry(.18,.03,8,24),rm);
-  grp.add(ring2);
-  // Center dot
-  grp.add(new THREE.Mesh(new THREE.SphereGeometry(.06,8,8),rm));
-  // Crosshair lines
-  const lm=new THREE.LineBasicMaterial({color:col,transparent:true,opacity:.5});
-  [[[0,.5,0],[0,-.5,0]],[[-.5,0,0],[.5,0,0]]].forEach(pts=>{
-    const g=new THREE.BufferGeometry().setFromPoints(pts.map(p=>new THREE.Vector3(...p)));
-    grp.add(new THREE.Line(g,lm));
-  });
-  return grp;
-}
+      function mkCrossEntropy(col) {
+        // Crosshair / target symbol
+        const grp = new THREE.Group();
+        const rm = new THREE.MeshPhongMaterial({
+          color: col,
+          emissive: col.clone().multiplyScalar(0.3),
+        });
+        // Outer ring
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(0.35, 0.04, 8, 24),
+          rm,
+        );
+        grp.add(ring);
+        // Inner ring
+        const ring2 = new THREE.Mesh(
+          new THREE.TorusGeometry(0.18, 0.03, 8, 24),
+          rm,
+        );
+        grp.add(ring2);
+        // Center dot
+        grp.add(new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), rm));
+        // Crosshair lines
+        const lm = new THREE.LineBasicMaterial({
+          color: col,
+          transparent: true,
+          opacity: 0.5,
+        });
+        [
+          [
+            [0, 0.5, 0],
+            [0, -0.5, 0],
+          ],
+          [
+            [-0.5, 0, 0],
+            [0.5, 0, 0],
+          ],
+        ].forEach((pts) => {
+          const g = new THREE.BufferGeometry().setFromPoints(
+            pts.map((p) => new THREE.Vector3(...p)),
+          );
+          grp.add(new THREE.Line(g, lm));
+        });
+        return grp;
+      }
 
-function mkEmbedding(col) {
-  // Lookup table: vertical columns = embedding vectors
-  const grp=new THREE.Group();
-  const cm=new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.2),transparent:true,opacity:.8});
-  for(let i=0;i<6;i++){
-    const h=.2+Math.random()*.4;
-    const bar=new THREE.Mesh(new THREE.BoxGeometry(.12,h,.35),cm.clone());
-    bar.position.set(i*.2-.5, h/2, 0);
-    bar.material.opacity=.5+Math.random()*.4;
-    grp.add(bar);
-  }
-  // Index arrow on leftmost
-  const arr=new THREE.Mesh(new THREE.ConeGeometry(.06,.15,6),new THREE.MeshPhongMaterial({color:0xffffff,emissive:0x444444,transparent:true,opacity:.7}));
-  arr.position.set(-.5,-.2,0);
-  grp.add(arr);
-  return grp;
-}
+      function mkEmbedding(col) {
+        // Lookup table: vertical columns = embedding vectors
+        const grp = new THREE.Group();
+        const cm = new THREE.MeshPhongMaterial({
+          color: col,
+          emissive: col.clone().multiplyScalar(0.2),
+          transparent: true,
+          opacity: 0.8,
+        });
+        for (let i = 0; i < 6; i++) {
+          const h = 0.2 + Math.random() * 0.4;
+          const bar = new THREE.Mesh(
+            new THREE.BoxGeometry(0.12, h, 0.35),
+            cm.clone(),
+          );
+          bar.position.set(i * 0.2 - 0.5, h / 2, 0);
+          bar.material.opacity = 0.5 + Math.random() * 0.4;
+          grp.add(bar);
+        }
+        // Index arrow on leftmost
+        const arr = new THREE.Mesh(
+          new THREE.ConeGeometry(0.06, 0.15, 6),
+          new THREE.MeshPhongMaterial({
+            color: 0xffffff,
+            emissive: 0x444444,
+            transparent: true,
+            opacity: 0.7,
+          }),
+        );
+        arr.position.set(-0.5, -0.2, 0);
+        grp.add(arr);
+        return grp;
+      }
 
-function mkMatMul(col) {
-  // Two matrices multiplying: A × B
-  const grp=new THREE.Group();
-  const matA=new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.15),transparent:true,opacity:.7});
-  const matB=new THREE.MeshPhongMaterial({color:col.clone().multiplyScalar(1.3),emissive:col.clone().multiplyScalar(.15),transparent:true,opacity:.7});
-  // Matrix A (vertical)
-  const a=new THREE.Mesh(new THREE.BoxGeometry(.4,.5,.06),matA);
-  a.position.set(-.35,.05,-.1);a.rotation.y=.2;
-  grp.add(a);
-  // Matrix B (horizontal)
-  const b=new THREE.Mesh(new THREE.BoxGeometry(.06,.5,.5),matB);
-  b.position.set(.35,.05,.1);b.rotation.y=-.2;
-  grp.add(b);
-  // Multiply symbol
-  const xm=new THREE.MeshPhongMaterial({color:0xffffff,emissive:0x666666});
-  const x1=new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,.2,6),xm);
-  x1.rotation.z=Math.PI/4;
-  const x2=new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,.2,6),xm);
-  x2.rotation.z=-Math.PI/4;
-  x1.position.set(0,.15,0);x2.position.set(0,.15,0);
-  grp.add(x1);grp.add(x2);
-  return grp;
-}
+      function mkMatMul(col) {
+        // Two matrices multiplying: A × B
+        const grp = new THREE.Group();
+        const matA = new THREE.MeshPhongMaterial({
+          color: col,
+          emissive: col.clone().multiplyScalar(0.15),
+          transparent: true,
+          opacity: 0.7,
+        });
+        const matB = new THREE.MeshPhongMaterial({
+          color: col.clone().multiplyScalar(1.3),
+          emissive: col.clone().multiplyScalar(0.15),
+          transparent: true,
+          opacity: 0.7,
+        });
+        // Matrix A (vertical)
+        const a = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.5, 0.06), matA);
+        a.position.set(-0.35, 0.05, -0.1);
+        a.rotation.y = 0.2;
+        grp.add(a);
+        // Matrix B (horizontal)
+        const b = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.5, 0.5), matB);
+        b.position.set(0.35, 0.05, 0.1);
+        b.rotation.y = -0.2;
+        grp.add(b);
+        // Multiply symbol
+        const xm = new THREE.MeshPhongMaterial({
+          color: 0xffffff,
+          emissive: 0x666666,
+        });
+        const x1 = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.02, 0.2, 6),
+          xm,
+        );
+        x1.rotation.z = Math.PI / 4;
+        const x2 = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.02, 0.2, 6),
+          xm,
+        );
+        x2.rotation.z = -Math.PI / 4;
+        x1.position.set(0, 0.15, 0);
+        x2.position.set(0, 0.15, 0);
+        grp.add(x1);
+        grp.add(x2);
+        return grp;
+      }
 
-function mkLSTM(col) {
-  // Recurrent loop with gate cells
-  const grp=new THREE.Group();
-  const gm=new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.25),transparent:true,opacity:.85});
-  // Main cell body
-  const cell=new THREE.Mesh(new THREE.BoxGeometry(.7,.5,.5),gm);
-  grp.add(cell);
-  // Gate boxes (forget, input, output) — small cubes on top
-  const gateMat=new THREE.MeshPhongMaterial({color:col.clone().multiplyScalar(1.4),emissive:col.clone().multiplyScalar(.3),transparent:true,opacity:.9});
-  const labels=['f','i','o'];
-  for(let i=0;i<3;i++){
-    const gate=new THREE.Mesh(new THREE.BoxGeometry(.18,.18,.18),gateMat);
-    gate.position.set((i-1)*.25,.35,0);
-    grp.add(gate);
-  }
-  // Recurrent loop arrow (torus arc)
-  const curve=new THREE.EllipseCurve(0,0,.55,.35,Math.PI*.2,Math.PI*1.8,false,0);
-  const pts2d=curve.getPoints(30);
-  const pts3d=pts2d.map(p=>new THREE.Vector3(p.x, p.y*.6+.05, .35));
-  const loopLine=new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(pts3d),
-    new THREE.LineBasicMaterial({color:col,transparent:true,opacity:.45})
-  );
-  grp.add(loopLine);
-  // Arrow tip on the loop
-  const arrowTip=new THREE.Mesh(new THREE.ConeGeometry(.05,.12,6),new THREE.MeshPhongMaterial({color:col,emissive:col.clone().multiplyScalar(.3)}));
-  arrowTip.position.copy(pts3d[pts3d.length-1]);
-  arrowTip.rotation.z=-Math.PI/3;
-  grp.add(arrowTip);
-  // Cell state line running through the top
-  const csLine=new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-.6,.55,0),new THREE.Vector3(.6,.55,0)]),
-    new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:.3})
-  );
-  grp.add(csLine);
-  return grp;
-}
+      function mkLSTM(col) {
+        // Recurrent loop with gate cells
+        const grp = new THREE.Group();
+        const gm = new THREE.MeshPhongMaterial({
+          color: col,
+          emissive: col.clone().multiplyScalar(0.25),
+          transparent: true,
+          opacity: 0.85,
+        });
+        // Main cell body
+        const cell = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.5, 0.5), gm);
+        grp.add(cell);
+        // Gate boxes (forget, input, output) — small cubes on top
+        const gateMat = new THREE.MeshPhongMaterial({
+          color: col.clone().multiplyScalar(1.4),
+          emissive: col.clone().multiplyScalar(0.3),
+          transparent: true,
+          opacity: 0.9,
+        });
+        const labels = ["f", "i", "o"];
+        for (let i = 0; i < 3; i++) {
+          const gate = new THREE.Mesh(
+            new THREE.BoxGeometry(0.18, 0.18, 0.18),
+            gateMat,
+          );
+          gate.position.set((i - 1) * 0.25, 0.35, 0);
+          grp.add(gate);
+        }
+        // Recurrent loop arrow (torus arc)
+        const curve = new THREE.EllipseCurve(
+          0,
+          0,
+          0.55,
+          0.35,
+          Math.PI * 0.2,
+          Math.PI * 1.8,
+          false,
+          0,
+        );
+        const pts2d = curve.getPoints(30);
+        const pts3d = pts2d.map(
+          (p) => new THREE.Vector3(p.x, p.y * 0.6 + 0.05, 0.35),
+        );
+        const loopLine = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(pts3d),
+          new THREE.LineBasicMaterial({
+            color: col,
+            transparent: true,
+            opacity: 0.45,
+          }),
+        );
+        grp.add(loopLine);
+        // Arrow tip on the loop
+        const arrowTip = new THREE.Mesh(
+          new THREE.ConeGeometry(0.05, 0.12, 6),
+          new THREE.MeshPhongMaterial({
+            color: col,
+            emissive: col.clone().multiplyScalar(0.3),
+          }),
+        );
+        arrowTip.position.copy(pts3d[pts3d.length - 1]);
+        arrowTip.rotation.z = -Math.PI / 3;
+        grp.add(arrowTip);
+        // Cell state line running through the top
+        const csLine = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-0.6, 0.55, 0),
+            new THREE.Vector3(0.6, 0.55, 0),
+          ]),
+          new THREE.LineBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.3,
+          }),
+        );
+        grp.add(csLine);
+        return grp;
+      }
 
-// ============================================================
-// MESH FACTORY
-// ============================================================
+      // ============================================================
+      // MESH FACTORY
+      // ============================================================
 
-function mkMesh(type, pos) {
-  const d=BD[type], col=new THREE.Color(d.col), [w,h,dp]=d.g;
-  let shape;
+      function mkMesh(type, pos) {
+        const d = BD[type],
+          col = new THREE.Color(d.col),
+          [w, h, dp] = d.g;
+        let shape;
 
-  switch(type) {
-    case 'input': shape=mkInputTensor(col); break;
-    case 'linear': shape=mkLinearMatrix(col); break;
-    case 'relu': shape=mkReLU(col); break;
-    case 'gelu': case 'sigmoid': case 'silu': case 'tanh': shape=mkSCurve(col); break;
-    case 'softmax': shape=mkSoftmax(col); break;
-    case 'conv2d': shape=mkConv2D(col); break;
-    case 'maxpool': shape=mkMaxPool(col); break;
-    case 'layernorm': case 'batchnorm': case 'rmsnorm': shape=mkNorm(col); break;
-    case 'attention': shape=mkAttention(col); break;
-    case 'reduce_sum': shape=mkReduceFunnel(col); break;
-    case 'flatten': shape=mkFlatten(col); break;
-    case 'dropout': shape=mkDropout(col); break;
-    case 'crossentropy': shape=mkCrossEntropy(col); break;
-    case 'embedding': shape=mkEmbedding(col); break;
-    case 'matmul': shape=mkMatMul(col); break;
-    case 'lstm': shape=mkLSTM(col); break;
-    default:
-      shape=new THREE.Mesh(new THREE.BoxGeometry(w,h,dp),new THREE.MeshPhongMaterial({color:col,transparent:true,opacity:.9}));
-  }
+        switch (type) {
+          case "input":
+            shape = mkInputTensor(col);
+            break;
+          case "linear":
+            shape = mkLinearMatrix(col);
+            break;
+          case "relu":
+            shape = mkReLU(col);
+            break;
+          case "gelu":
+          case "sigmoid":
+          case "silu":
+          case "tanh":
+            shape = mkSCurve(col);
+            break;
+          case "softmax":
+            shape = mkSoftmax(col);
+            break;
+          case "conv2d":
+            shape = mkConv2D(col);
+            break;
+          case "maxpool":
+            shape = mkMaxPool(col);
+            break;
+          case "layernorm":
+          case "batchnorm":
+          case "rmsnorm":
+            shape = mkNorm(col);
+            break;
+          case "attention":
+            shape = mkAttention(col);
+            break;
+          case "reduce_sum":
+            shape = mkReduceFunnel(col);
+            break;
+          case "flatten":
+            shape = mkFlatten(col);
+            break;
+          case "dropout":
+            shape = mkDropout(col);
+            break;
+          case "crossentropy":
+            shape = mkCrossEntropy(col);
+            break;
+          case "embedding":
+            shape = mkEmbedding(col);
+            break;
+          case "matmul":
+            shape = mkMatMul(col);
+            break;
+          case "lstm":
+            shape = mkLSTM(col);
+            break;
+          default:
+            shape = new THREE.Mesh(
+              new THREE.BoxGeometry(w, h, dp),
+              new THREE.MeshPhongMaterial({
+                color: col,
+                transparent: true,
+                opacity: 0.9,
+              }),
+            );
+        }
 
-  // Wrap in a group for uniform handling
-  const m=new THREE.Group();
-  m.add(shape);
-  m.add(mkLabel(d.n, h));
-  m.position.copy(pos);
-  scene.add(m);
+        // Wrap in a group for uniform handling
+        const m = new THREE.Group();
+        m.add(shape);
+        m.add(mkLabel(d.n, h));
+        m.position.copy(pos);
+        scene.add(m);
 
-  // Entry animation
-  const ty=pos.y;m.position.y=ty+3;m.scale.set(.01,.01,.01);
-  const st=Date.now();
-  (function anim(){const t=Math.min((Date.now()-st)/400,1),e=1-Math.pow(1-t,3);m.position.y=ty+3*(1-e);m.scale.setScalar(e);if(t<1)requestAnimationFrame(anim)})();
-  return m;
-}
+        // Entry animation
+        const ty = pos.y;
+        m.position.y = ty + 3;
+        m.scale.set(0.01, 0.01, 0.01);
+        const st = Date.now();
+        (function anim() {
+          const t = Math.min((Date.now() - st) / 400, 1),
+            e = 1 - Math.pow(1 - t, 3);
+          m.position.y = ty + 3 * (1 - e);
+          m.scale.setScalar(e);
+          if (t < 1) requestAnimationFrame(anim);
+        })();
+        return m;
+      }
 
-function mkLine(a,b){
-  const mid=new THREE.Vector3().addVectors(a.mesh.position,b.mesh.position).multiplyScalar(.5);mid.y+=.5;
-  const pts=new THREE.QuadraticBezierCurve3(a.mesh.position.clone(),mid,b.mesh.position.clone()).getPoints(20);
-  const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0x5b8aff,transparent:true,opacity:.3}));
-  scene.add(l);return l;
-}
+      function mkLine(a, b) {
+        const mid = new THREE.Vector3()
+          .addVectors(a.mesh.position, b.mesh.position)
+          .multiplyScalar(0.5);
+        mid.y += 0.5;
+        const pts = new THREE.QuadraticBezierCurve3(
+          a.mesh.position.clone(),
+          mid,
+          b.mesh.position.clone(),
+        ).getPoints(20);
+        const l = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(pts),
+          new THREE.LineBasicMaterial({
+            color: 0x5b8aff,
+            transparent: true,
+            opacity: 0.3,
+          }),
+        );
+        scene.add(l);
+        return l;
+      }
 
-function place(type,pos){
-  const d=BD[type],m=mkMesh(type,pos);
-  const blk={id:nid++,type,mesh:m};
-  m.userData.bid=blk.id;blocks.push(blk);
-  if(blocks.length>1){const prev=blocks[blocks.length-2];conns.push({from:prev.id,to:blk.id,line:mkLine(prev,blk)})}
-  updUI();genCode();
-}
+      function place(type, pos) {
+        const d = BD[type],
+          m = mkMesh(type, pos);
+        const blk = { id: nid++, type, mesh: m };
+        m.userData.bid = blk.id;
+        blocks.push(blk);
+        if (blocks.length > 1) {
+          const prev = blocks[blocks.length - 2];
+          conns.push({ from: prev.id, to: blk.id, line: mkLine(prev, blk) });
+        }
+        updUI();
+        genCode();
+      }
 
-// Drag/Drop
-document.addEventListener('dragover',e=>{e.preventDefault();gh.style.left=(e.clientX+10)+'px';gh.style.top=(e.clientY+10)+'px'});
-document.addEventListener('dragend',()=>{dragging=null;gh.classList.remove('v');cva.classList.remove('da')});
-cva.addEventListener('dragover',e=>e.preventDefault());
-cva.addEventListener('drop',e=>{
-  e.preventDefault();gh.classList.remove('v');cva.classList.remove('da');
-  document.getElementById('hint').style.opacity='0';
-  if(!dragging||!BD[dragging])return;
-  const rc=new THREE.Raycaster(),ms=new THREE.Vector2(),rect=canvas.getBoundingClientRect();
-  ms.x=((e.clientX-rect.left)/rect.width)*2-1;ms.y=-((e.clientY-rect.top)/rect.height)*2+1;
-  rc.setFromCamera(ms,cam);const hit=rc.intersectObject(gnd);
-  let pos;
-  if(hit.length>0){pos=hit[0].point.clone();pos.y=BD[dragging].g[1]/2}
-  else{pos=new THREE.Vector3(blocks.length*2.8-6,BD[dragging].g[1]/2,0)}
-  place(dragging,pos);
-});
+      // Drag/Drop
+      document.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        gh.style.left = e.clientX + 10 + "px";
+        gh.style.top = e.clientY + 10 + "px";
+      });
+      document.addEventListener("dragend", () => {
+        dragging = null;
+        gh.classList.remove("v");
+        cva.classList.remove("da");
+      });
+      cva.addEventListener("dragover", (e) => e.preventDefault());
+      cva.addEventListener("drop", (e) => {
+        e.preventDefault();
+        gh.classList.remove("v");
+        cva.classList.remove("da");
+        document.getElementById("hint").style.opacity = "0";
+        if (!dragging || !BD[dragging]) return;
+        const rc = new THREE.Raycaster(),
+          ms = new THREE.Vector2(),
+          rect = canvas.getBoundingClientRect();
+        ms.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        ms.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        rc.setFromCamera(ms, cam);
+        const hit = rc.intersectObject(gnd);
+        let pos;
+        if (hit.length > 0) {
+          pos = hit[0].point.clone();
+          pos.y = BD[dragging].g[1] / 2;
+        } else {
+          pos = new THREE.Vector3(
+            blocks.length * 2.8 - 6,
+            BD[dragging].g[1] / 2,
+            0,
+          );
+        }
+        place(dragging, pos);
+      });
 
-// Camera
-let cd=false,cp={x:0,y:0},cth=Math.PI/6,cph=Math.PI/5,cdist=16;
-function updCam(){cam.position.set(cdist*Math.sin(cth)*Math.cos(cph),cdist*Math.sin(cph),cdist*Math.cos(cth)*Math.cos(cph));cam.lookAt(0,1,0)}
-canvas.addEventListener('mousedown',e=>{if(e.button===2||e.shiftKey){cd=true;cp={x:e.clientX,y:e.clientY};e.preventDefault()}});
-canvas.addEventListener('mousemove',e=>{if(cd){cth+=(e.clientX-cp.x)*.005;cph=Math.max(.1,Math.min(1.4,cph+(e.clientY-cp.y)*.005));updCam();cp={x:e.clientX,y:e.clientY}}});
-canvas.addEventListener('mouseup',()=>cd=false);canvas.addEventListener('mouseleave',()=>cd=false);
-canvas.addEventListener('contextmenu',e=>e.preventDefault());
-canvas.addEventListener('wheel',e=>{e.preventDefault();cdist=Math.max(5,Math.min(35,cdist+e.deltaY*.02));updCam()});
+      // Camera
+      let cd = false,
+        cp = { x: 0, y: 0 },
+        cth = Math.PI / 6,
+        cph = Math.PI / 5,
+        cdist = 16;
+      function updCam() {
+        cam.position.set(
+          cdist * Math.sin(cth) * Math.cos(cph),
+          cdist * Math.sin(cph),
+          cdist * Math.cos(cth) * Math.cos(cph),
+        );
+        cam.lookAt(0, 1, 0);
+      }
+      canvas.addEventListener("mousedown", (e) => {
+        if (e.button === 2 || e.shiftKey) {
+          cd = true;
+          cp = { x: e.clientX, y: e.clientY };
+          e.preventDefault();
+        }
+      });
+      canvas.addEventListener("mousemove", (e) => {
+        if (cd) {
+          cth += (e.clientX - cp.x) * 0.005;
+          cph = Math.max(0.1, Math.min(1.4, cph + (e.clientY - cp.y) * 0.005));
+          updCam();
+          cp = { x: e.clientX, y: e.clientY };
+        }
+      });
+      canvas.addEventListener("mouseup", () => (cd = false));
+      canvas.addEventListener("mouseleave", () => (cd = false));
+      canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+      canvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        cdist = Math.max(5, Math.min(35, cdist + e.deltaY * 0.02));
+        updCam();
+      });
 
-// Tabs
-document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
-  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');tab=t.dataset.t;genCode();
-}));
+      // Tabs
+      document.querySelectorAll(".tab").forEach((t) =>
+        t.addEventListener("click", () => {
+          document
+            .querySelectorAll(".tab")
+            .forEach((x) => x.classList.remove("on"));
+          t.classList.add("on");
+          tab = t.dataset.t;
+          genCode();
+        }),
+      );
 
-// Code gen (same as before)
-function genCode(){
-const o=document.getElementById('co');
-if(!blocks.length){o.innerHTML='<span class="cm">// drag blocks to see generated code</span>';updStats();return}
-if(tab==='hl')o.innerHTML=genHL();
-else if(tab==='rs')o.innerHTML=genRS();
-else if(tab==='wg')o.innerHTML=genWG();
-else o.innerHTML=genDP();
-updStats();
-}
+      // Code gen (same as before)
+      function genCode() {
+        const o = document.getElementById("co");
+        if (!blocks.length) {
+          o.innerHTML =
+            '<span class="cm">// drag blocks to see generated code</span>';
+          updStats();
+          return;
+        }
+        if (tab === "hl") o.innerHTML = genHL();
+        else if (tab === "rs") o.innerHTML = genRS();
+        else if (tab === "wg") o.innerHTML = genWG();
+        else o.innerHTML = genDP();
+        updStats();
+      }
 
-function genHL(){
-let L=[];
-L.push(`<span class="kw">import</span> { Tensor, nn, optim, init } <span class="kw">from</span> <span class="str">'./nn.js'</span>;\n`);
-L.push(`<span class="kw">await</span> <span class="fn">init</span>();  <span class="cm">// WebGPU</span>\n`);
-L.push(`<span class="kw">const</span> model = <span class="kw">new</span> nn.<span class="fn">Sequential</span>(`);
-let sh=null;
-blocks.forEach((b,i)=>{
-const d=BD[b.type],cm=i<blocks.length-1?',':'';
-if(b.type==='input'){sh=d.p.shape;L.push(`  <span class="cm">// Input: [${sh.join(', ')}]</span>`);return}
-if(b.type==='linear'){L.push(`  <span class="kw">new</span> nn.<span class="fn">Linear</span>(<span class="num">${sh?sh[sh.length-1]:'?'}</span>, <span class="num">${d.p.units}</span>)${cm}`);if(sh)sh=[...sh.slice(0,-1),d.p.units]}
-else if(b.type==='conv2d'){L.push(`  <span class="kw">new</span> nn.<span class="fn">Conv2D</span>(<span class="num">${sh&&sh[3]||'?'}</span>, <span class="num">${d.p.filters}</span>, <span class="num">${d.p.kernel}</span>)${cm}`);if(sh&&sh.length===4)sh=[sh[0],sh[1],sh[2],d.p.filters]}
-else if(b.type==='maxpool'){L.push(`  <span class="kw">new</span> nn.<span class="fn">MaxPool2D</span>(<span class="num">${d.p.kernel}</span>, <span class="num">${d.p.stride}</span>)${cm}`);if(sh&&sh.length===4)sh=[sh[0],Math.floor(sh[1]/2),Math.floor(sh[2]/2),sh[3]]}
-else if(b.type==='flatten'){L.push(`  <span class="kw">new</span> nn.<span class="fn">Flatten</span>()${cm}`);if(sh)sh=[sh[0],sh.slice(1).reduce((a,b)=>a*b,1)]}
-else if(b.type==='layernorm')L.push(`  <span class="kw">new</span> nn.<span class="fn">LayerNorm</span>([<span class="num">${sh?sh[sh.length-1]:'?'}</span>])${cm}`);
-else if(b.type==='batchnorm')L.push(`  <span class="kw">new</span> nn.<span class="fn">BatchNorm1D</span>(<span class="num">${sh?sh[sh.length-1]:'?'}</span>)${cm}`);
-else if(b.type==='dropout')L.push(`  <span class="kw">new</span> nn.<span class="fn">Dropout</span>(<span class="num">${d.p.rate}</span>)${cm}`);
-else if(b.type==='embedding')L.push(`  <span class="kw">new</span> nn.<span class="fn">Embedding</span>(<span class="num">${d.p.vocab}</span>, <span class="num">${d.p.dim}</span>)${cm}`);
-else if(b.type==='lstm')L.push(`  <span class="kw">new</span> nn.<span class="fn">LSTM</span>(<span class="num">${sh?sh[sh.length-1]:'?'}</span>, <span class="num">${d.p.hidden}</span>)${cm}`);
-else if(b.type==='attention')L.push(`  <span class="cm">// Attention: ${d.p.heads} heads, dim=${d.p.dim}, causal=${d.p.causal}</span>`);
-else L.push(`  <span class="kw">new</span> nn.<span class="fn">${d.n}</span>()${cm}`);
-});
-L.push(`);\n`);
-L.push(`<span class="kw">const</span> opt = <span class="kw">new</span> optim.<span class="fn">Adam</span>(model.<span class="fn">parameters</span>(), <span class="num">0.001</span>);\n`);
-L.push(`<span class="kw">const</span> x = Tensor.<span class="fn">rand</span>([<span class="num">${blocks[0]&&BD[blocks[0].type].p.shape?BD[blocks[0].type].p.shape.join(', '):'1, 784'}</span>]);`);
-L.push(`<span class="kw">const</span> y = <span class="kw">await</span> model.<span class="fn">forward</span>(x);`);
-return L.join('\n');
-}
+      function genHL() {
+        let L = [];
+        L.push(
+          `<span class="kw">import</span> { Tensor, nn, optim, init } <span class="kw">from</span> <span class="str">'./nn.js'</span>;\n`,
+        );
+        L.push(
+          `<span class="kw">await</span> <span class="fn">init</span>();  <span class="cm">// WebGPU</span>\n`,
+        );
+        L.push(
+          `<span class="kw">const</span> model = <span class="kw">new</span> nn.<span class="fn">Sequential</span>(`,
+        );
+        let sh = null;
+        blocks.forEach((b, i) => {
+          const d = BD[b.type],
+            cm = i < blocks.length - 1 ? "," : "";
+          if (b.type === "input") {
+            sh = d.p.shape;
+            L.push(`  <span class="cm">// Input: [${sh.join(", ")}]</span>`);
+            return;
+          }
+          if (b.type === "linear") {
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">Linear</span>(<span class="num">${sh ? sh[sh.length - 1] : "?"}</span>, <span class="num">${d.p.units}</span>)${cm}`,
+            );
+            if (sh) sh = [...sh.slice(0, -1), d.p.units];
+          } else if (b.type === "conv2d") {
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">Conv2D</span>(<span class="num">${(sh && sh[3]) || "?"}</span>, <span class="num">${d.p.filters}</span>, <span class="num">${d.p.kernel}</span>)${cm}`,
+            );
+            if (sh && sh.length === 4) sh = [sh[0], sh[1], sh[2], d.p.filters];
+          } else if (b.type === "maxpool") {
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">MaxPool2D</span>(<span class="num">${d.p.kernel}</span>, <span class="num">${d.p.stride}</span>)${cm}`,
+            );
+            if (sh && sh.length === 4)
+              sh = [sh[0], Math.floor(sh[1] / 2), Math.floor(sh[2] / 2), sh[3]];
+          } else if (b.type === "flatten") {
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">Flatten</span>()${cm}`,
+            );
+            if (sh) sh = [sh[0], sh.slice(1).reduce((a, b) => a * b, 1)];
+          } else if (b.type === "layernorm")
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">LayerNorm</span>([<span class="num">${sh ? sh[sh.length - 1] : "?"}</span>])${cm}`,
+            );
+          else if (b.type === "batchnorm")
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">BatchNorm1D</span>(<span class="num">${sh ? sh[sh.length - 1] : "?"}</span>)${cm}`,
+            );
+          else if (b.type === "dropout")
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">Dropout</span>(<span class="num">${d.p.rate}</span>)${cm}`,
+            );
+          else if (b.type === "embedding")
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">Embedding</span>(<span class="num">${d.p.vocab}</span>, <span class="num">${d.p.dim}</span>)${cm}`,
+            );
+          else if (b.type === "lstm")
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">LSTM</span>(<span class="num">${sh ? sh[sh.length - 1] : "?"}</span>, <span class="num">${d.p.hidden}</span>)${cm}`,
+            );
+          else if (b.type === "attention")
+            L.push(
+              `  <span class="cm">// Attention: ${d.p.heads} heads, dim=${d.p.dim}, causal=${d.p.causal}</span>`,
+            );
+          else
+            L.push(
+              `  <span class="kw">new</span> nn.<span class="fn">${d.n}</span>()${cm}`,
+            );
+        });
+        L.push(`);\n`);
+        L.push(
+          `<span class="kw">const</span> opt = <span class="kw">new</span> optim.<span class="fn">Adam</span>(model.<span class="fn">parameters</span>(), <span class="num">0.001</span>);\n`,
+        );
+        L.push(
+          `<span class="kw">const</span> x = Tensor.<span class="fn">rand</span>([<span class="num">${blocks[0] && BD[blocks[0].type].p.shape ? BD[blocks[0].type].p.shape.join(", ") : "1, 784"}</span>]);`,
+        );
+        L.push(
+          `<span class="kw">const</span> y = <span class="kw">await</span> model.<span class="fn">forward</span>(x);`,
+        );
+        return L.join("\n");
+      }
 
-function genRS(){
-let L=[`<span class="cm">// ReScript IR</span>`,`<span class="kw">open</span> <span class="type">Types</span>\n`,`<span class="kw">let</span> graph = {`,`  nodes: [`];
-blocks.forEach((b,i)=>{
-const d=BD[b.type],cm=i<blocks.length-1?',':'';
-if(b.type==='input')L.push(`    {id:<span class="num">${i}</span>, op:<span class="fn">Input</span>({shape:[<span class="dim">${d.p.shape.join(',')}</span>], dtype:<span class="type">F32</span>}), inputs:[], name:<span class="fn">Some</span>(<span class="str">"input"</span>)}${cm}`);
-else if(b.type==='linear')L.push(`    {id:<span class="num">${i}</span>, op:<span class="fn">Dense</span>({units:<span class="num">${d.p.units}</span>, useBias:<span class="num">true</span>}), inputs:[<span class="num">${i-1}</span>], name:<span class="fn">Some</span>(<span class="str">"linear_${i}"</span>)}${cm}`);
-else if(b.type==='conv2d')L.push(`    {id:<span class="num">${i}</span>, op:<span class="fn">Conv2D</span>({filters:<span class="num">${d.p.filters}</span>, kernel:(<span class="num">${d.p.kernel}</span>,<span class="num">${d.p.kernel}</span>), stride:(<span class="num">${d.p.stride}</span>,<span class="num">${d.p.stride}</span>), padding:<span class="type">Same</span>}), inputs:[<span class="num">${i-1}</span>]}${cm}`);
-else if(b.type==='softmax')L.push(`    {id:<span class="num">${i}</span>, op:<span class="fn">Softmax</span>({axis:<span class="num">${d.p.axis}</span>}), inputs:[<span class="num">${i-1}</span>]}${cm}`);
-else if(b.type==='layernorm')L.push(`    {id:<span class="num">${i}</span>, op:<span class="fn">LayerNorm</span>({axes:[<span class="num">-1</span>], epsilon:<span class="num">1e-5</span>}), inputs:[<span class="num">${i-1}</span>]}${cm}`);
-else if(b.type==='attention')L.push(`    {id:<span class="num">${i}</span>, op:<span class="fn">ScaledDotProductAttention</span>({dropout:<span class="num">0.0</span>, causal:<span class="num">${d.p.causal}</span>}), inputs:[<span class="num">${i-1}</span>]}${cm}`);
-else L.push(`    {id:<span class="num">${i}</span>, op:<span class="fn">${d.n}</span>, inputs:[<span class="num">${i>0?i-1:''}</span>]}${cm}`);
-});
-L.push(`  ], inputIds:[<span class="num">0</span>], outputIds:[<span class="num">${blocks.length-1}</span>], nextId:<span class="num">${blocks.length}</span>}`);
-return L.join('\n');
-}
+      function genRS() {
+        let L = [
+          `<span class="cm">// ReScript IR</span>`,
+          `<span class="kw">open</span> <span class="type">Types</span>\n`,
+          `<span class="kw">let</span> graph = {`,
+          `  nodes: [`,
+        ];
+        blocks.forEach((b, i) => {
+          const d = BD[b.type],
+            cm = i < blocks.length - 1 ? "," : "";
+          if (b.type === "input")
+            L.push(
+              `    {id:<span class="num">${i}</span>, op:<span class="fn">Input</span>({shape:[<span class="dim">${d.p.shape.join(",")}</span>], dtype:<span class="type">F32</span>}), inputs:[], name:<span class="fn">Some</span>(<span class="str">"input"</span>)}${cm}`,
+            );
+          else if (b.type === "linear")
+            L.push(
+              `    {id:<span class="num">${i}</span>, op:<span class="fn">Dense</span>({units:<span class="num">${d.p.units}</span>, useBias:<span class="num">true</span>}), inputs:[<span class="num">${i - 1}</span>], name:<span class="fn">Some</span>(<span class="str">"linear_${i}"</span>)}${cm}`,
+            );
+          else if (b.type === "conv2d")
+            L.push(
+              `    {id:<span class="num">${i}</span>, op:<span class="fn">Conv2D</span>({filters:<span class="num">${d.p.filters}</span>, kernel:(<span class="num">${d.p.kernel}</span>,<span class="num">${d.p.kernel}</span>), stride:(<span class="num">${d.p.stride}</span>,<span class="num">${d.p.stride}</span>), padding:<span class="type">Same</span>}), inputs:[<span class="num">${i - 1}</span>]}${cm}`,
+            );
+          else if (b.type === "softmax")
+            L.push(
+              `    {id:<span class="num">${i}</span>, op:<span class="fn">Softmax</span>({axis:<span class="num">${d.p.axis}</span>}), inputs:[<span class="num">${i - 1}</span>]}${cm}`,
+            );
+          else if (b.type === "layernorm")
+            L.push(
+              `    {id:<span class="num">${i}</span>, op:<span class="fn">LayerNorm</span>({axes:[<span class="num">-1</span>], epsilon:<span class="num">1e-5</span>}), inputs:[<span class="num">${i - 1}</span>]}${cm}`,
+            );
+          else if (b.type === "attention")
+            L.push(
+              `    {id:<span class="num">${i}</span>, op:<span class="fn">ScaledDotProductAttention</span>({dropout:<span class="num">0.0</span>, causal:<span class="num">${d.p.causal}</span>}), inputs:[<span class="num">${i - 1}</span>]}${cm}`,
+            );
+          else
+            L.push(
+              `    {id:<span class="num">${i}</span>, op:<span class="fn">${d.n}</span>, inputs:[<span class="num">${i > 0 ? i - 1 : ""}</span>]}${cm}`,
+            );
+        });
+        L.push(
+          `  ], inputIds:[<span class="num">0</span>], outputIds:[<span class="num">${blocks.length - 1}</span>], nextId:<span class="num">${blocks.length}</span>}`,
+        );
+        return L.join("\n");
+      }
 
-function genWG(){
-let L=[`<span class="cm">// WGSL compute shaders generated by Codegen.res</span>\n`];
-blocks.forEach((b,i)=>{
-const d=BD[b.type];if(b.type==='input')return;
-L.push(`<span class="cm">// ═══ ${d.n} (node ${i}) ═══</span>`);
-const hdr=`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; input: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`;
-const main=`<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">let</span> idx = gid.x;`;
-if(b.type==='relu'){L.push(hdr+'\n'+main);L.push(`  output[idx] = <span class="fn">max</span>(input[idx], <span class="num">0.0</span>);\n}\n`)}
-else if(b.type==='gelu'){L.push(hdr+'\n'+main);L.push(`  <span class="kw">let</span> x = input[idx];\n  output[idx] = <span class="num">0.5</span> * x * (<span class="num">1.0</span> + <span class="fn">tanh</span>(<span class="num">0.7978845</span> * (x + <span class="num">0.044715</span> * x * x * x)));\n}\n`)}
-else if(b.type==='sigmoid'){L.push(hdr+'\n'+main);L.push(`  output[idx] = <span class="num">1.0</span> / (<span class="num">1.0</span> + <span class="fn">exp</span>(-input[idx]));\n}\n`)}
-else if(b.type==='silu'){L.push(hdr+'\n'+main);L.push(`  <span class="kw">let</span> x = input[idx];\n  output[idx] = x / (<span class="num">1.0</span> + <span class="fn">exp</span>(-x));\n}\n`)}
-else if(b.type==='linear'){
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; a: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; b: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`);
-L.push(`<span class="kw">const</span> N = <span class="num">${d.p.units}</span>u;\n`);
-L.push(`<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">let</span> idx = gid.x;\n  <span class="kw">if</span> (idx >= N) { <span class="kw">return</span>; }\n  <span class="kw">var</span> sum = <span class="num">0.0</span>;\n  <span class="kw">for</span> (<span class="kw">var</span> i = <span class="num">0</span>u; i < K; i++) {\n    sum += a[i] * b[i * N + idx];\n  }\n  output[idx] = sum;\n}\n`)}
-else if(b.type==='attention'){
-L.push(`<span class="cm">// Scaled Dot-Product Attention: Q·Kᵀ/√d → softmax → V</span>`);
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; Q: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`);
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; K: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`);
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read&gt; V: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`);
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(3) <span class="kw">var</span>&lt;storage, read_write&gt; out: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`);
-L.push(`<span class="kw">const</span> HEADS=<span class="num">${d.p.heads}</span>u; <span class="kw">const</span> DIM=<span class="num">${d.p.dim}</span>u;\n<span class="kw">const</span> HD = DIM/HEADS;\n<span class="kw">const</span> SCALE = <span class="num">1.0</span>/<span class="fn">sqrt</span>(<span class="fn">f32</span>(HD));\n`);
-L.push(`<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">var</span> score = <span class="num">0.0</span>;\n  <span class="kw">for</span> (<span class="kw">var</span> d=<span class="num">0</span>u; d<HD; d++) {\n    score += Q[q_off+d] * K[k_off+d];\n  }\n  score *= SCALE;`);
-if(d.p.causal)L.push(`  <span class="kw">if</span> (col > row) { score = <span class="num">-1e9</span>; } <span class="cm">// causal mask</span>`);
-L.push(`  <span class="cm">// softmax + V projection...</span>\n}\n`)}
-else if(b.type==='layernorm'){
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; input: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`);
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; gamma: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`);
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read&gt; beta: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`);
-L.push(`<span class="kw">@group</span>(0) <span class="kw">@binding</span>(3) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`);
-L.push(`<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">var</span> mean=<span class="num">0.0</span>;\n  <span class="kw">for</span>(<span class="kw">var</span> i=<span class="num">0</span>u;i<N;i++){mean+=input[off+i];}\n  mean/=<span class="fn">f32</span>(N);\n  <span class="kw">var</span> v=<span class="num">0.0</span>;\n  <span class="kw">for</span>(<span class="kw">var</span> i=<span class="num">0</span>u;i<N;i++){<span class="kw">let</span> d=input[off+i]-mean;v+=d*d;}\n  v/=<span class="fn">f32</span>(N);\n  <span class="kw">let</span> inv=<span class="num">1.0</span>/<span class="fn">sqrt</span>(v+<span class="num">${d.p.eps}</span>);\n  output[idx]=gamma[j]*(input[idx]-mean)*inv+beta[j];\n}\n`)}
-else{L.push(hdr+'\n'+main);L.push(`  output[idx] = <span class="fn">${b.type}</span>(input[idx]);\n}\n`)}
-});
-return L.join('\n');
-}
+      function genWG() {
+        let L = [
+          `<span class="cm">// WGSL compute shaders generated by Codegen.res</span>\n`,
+        ];
+        blocks.forEach((b, i) => {
+          const d = BD[b.type];
+          if (b.type === "input") return;
+          L.push(`<span class="cm">// ═══ ${d.n} (node ${i}) ═══</span>`);
+          const hdr = `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; input: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`;
+          const main = `<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">let</span> idx = gid.x;`;
+          if (b.type === "relu") {
+            L.push(hdr + "\n" + main);
+            L.push(
+              `  output[idx] = <span class="fn">max</span>(input[idx], <span class="num">0.0</span>);\n}\n`,
+            );
+          } else if (b.type === "gelu") {
+            L.push(hdr + "\n" + main);
+            L.push(
+              `  <span class="kw">let</span> x = input[idx];\n  output[idx] = <span class="num">0.5</span> * x * (<span class="num">1.0</span> + <span class="fn">tanh</span>(<span class="num">0.7978845</span> * (x + <span class="num">0.044715</span> * x * x * x)));\n}\n`,
+            );
+          } else if (b.type === "sigmoid") {
+            L.push(hdr + "\n" + main);
+            L.push(
+              `  output[idx] = <span class="num">1.0</span> / (<span class="num">1.0</span> + <span class="fn">exp</span>(-input[idx]));\n}\n`,
+            );
+          } else if (b.type === "silu") {
+            L.push(hdr + "\n" + main);
+            L.push(
+              `  <span class="kw">let</span> x = input[idx];\n  output[idx] = x / (<span class="num">1.0</span> + <span class="fn">exp</span>(-x));\n}\n`,
+            );
+          } else if (b.type === "linear") {
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; a: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; b: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`,
+            );
+            L.push(
+              `<span class="kw">const</span> N = <span class="num">${d.p.units}</span>u;\n`,
+            );
+            L.push(
+              `<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">let</span> idx = gid.x;\n  <span class="kw">if</span> (idx >= N) { <span class="kw">return</span>; }\n  <span class="kw">var</span> sum = <span class="num">0.0</span>;\n  <span class="kw">for</span> (<span class="kw">var</span> i = <span class="num">0</span>u; i < K; i++) {\n    sum += a[i] * b[i * N + idx];\n  }\n  output[idx] = sum;\n}\n`,
+            );
+          } else if (b.type === "attention") {
+            L.push(
+              `<span class="cm">// Scaled Dot-Product Attention: Q·Kᵀ/√d → softmax → V</span>`,
+            );
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; Q: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
+            );
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; K: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
+            );
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read&gt; V: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
+            );
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(3) <span class="kw">var</span>&lt;storage, read_write&gt; out: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`,
+            );
+            L.push(
+              `<span class="kw">const</span> HEADS=<span class="num">${d.p.heads}</span>u; <span class="kw">const</span> DIM=<span class="num">${d.p.dim}</span>u;\n<span class="kw">const</span> HD = DIM/HEADS;\n<span class="kw">const</span> SCALE = <span class="num">1.0</span>/<span class="fn">sqrt</span>(<span class="fn">f32</span>(HD));\n`,
+            );
+            L.push(
+              `<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">var</span> score = <span class="num">0.0</span>;\n  <span class="kw">for</span> (<span class="kw">var</span> d=<span class="num">0</span>u; d<HD; d++) {\n    score += Q[q_off+d] * K[k_off+d];\n  }\n  score *= SCALE;`,
+            );
+            if (d.p.causal)
+              L.push(
+                `  <span class="kw">if</span> (col > row) { score = <span class="num">-1e9</span>; } <span class="cm">// causal mask</span>`,
+              );
+            L.push(
+              `  <span class="cm">// softmax + V projection...</span>\n}\n`,
+            );
+          } else if (b.type === "layernorm") {
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; input: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
+            );
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; gamma: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
+            );
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read&gt; beta: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
+            );
+            L.push(
+              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(3) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`,
+            );
+            L.push(
+              `<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">var</span> mean=<span class="num">0.0</span>;\n  <span class="kw">for</span>(<span class="kw">var</span> i=<span class="num">0</span>u;i<N;i++){mean+=input[off+i];}\n  mean/=<span class="fn">f32</span>(N);\n  <span class="kw">var</span> v=<span class="num">0.0</span>;\n  <span class="kw">for</span>(<span class="kw">var</span> i=<span class="num">0</span>u;i<N;i++){<span class="kw">let</span> d=input[off+i]-mean;v+=d*d;}\n  v/=<span class="fn">f32</span>(N);\n  <span class="kw">let</span> inv=<span class="num">1.0</span>/<span class="fn">sqrt</span>(v+<span class="num">${d.p.eps}</span>);\n  output[idx]=gamma[j]*(input[idx]-mean)*inv+beta[j];\n}\n`,
+            );
+          } else {
+            L.push(hdr + "\n" + main);
+            L.push(
+              `  output[idx] = <span class="fn">${b.type}</span>(input[idx]);\n}\n`,
+            );
+          }
+        });
+        return L.join("\n");
+      }
 
-function genDP(){
-let L=[`<span class="cm">// Dispatch table</span>\n`];
-blocks.forEach((b,i)=>{if(b.type==='input')return;const d=BD[b.type];
-const wg=Math.ceil(784/256);
-L.push(`{ kernel: <span class="str">"${b.type}_${i}"</span>, workgroups: [<span class="num">${wg}</span>,<span class="num">1</span>,<span class="num">1</span>], bindings: <span class="num">${b.type==='linear'||b.type==='attention'||b.type==='layernorm'?4:2}</span> }\n`);
-});return L.join('\n');
-}
+      function genDP() {
+        let L = [`<span class="cm">// Dispatch table</span>\n`];
+        blocks.forEach((b, i) => {
+          if (b.type === "input") return;
+          const d = BD[b.type];
+          const wg = Math.ceil(784 / 256);
+          L.push(
+            `{ kernel: <span class="str">"${b.type}_${i}"</span>, workgroups: [<span class="num">${wg}</span>,<span class="num">1</span>,<span class="num">1</span>], bindings: <span class="num">${b.type === "linear" || b.type === "attention" || b.type === "layernorm" ? 4 : 2}</span> }\n`,
+          );
+        });
+        return L.join("\n");
+      }
 
-function updStats(){
-const k=blocks.filter(b=>b.type!=='input').length;
-let v=0;blocks.forEach(b=>{const d=BD[b.type];if(d.p.units)v+=d.p.units*4;if(d.p.filters)v+=d.p.filters*d.p.kernel*d.p.kernel*4;if(d.p.vocab)v+=d.p.vocab*d.p.dim*4});
-document.getElementById('sk').textContent=k;
-document.getElementById('sb2').textContent=blocks.length*2;
-document.getElementById('sv').textContent=v>1048576?(v/1048576).toFixed(1)+' MB':v>1024?(v/1024).toFixed(1)+' KB':v+' B';
-}
+      function updStats() {
+        const k = blocks.filter((b) => b.type !== "input").length;
+        let v = 0;
+        blocks.forEach((b) => {
+          const d = BD[b.type];
+          if (d.p.units) v += d.p.units * 4;
+          if (d.p.filters) v += d.p.filters * d.p.kernel * d.p.kernel * 4;
+          if (d.p.vocab) v += d.p.vocab * d.p.dim * 4;
+        });
+        document.getElementById("sk").textContent = k;
+        document.getElementById("sb2").textContent = blocks.length * 2;
+        document.getElementById("sv").textContent =
+          v > 1048576
+            ? (v / 1048576).toFixed(1) + " MB"
+            : v > 1024
+              ? (v / 1024).toFixed(1) + " KB"
+              : v + " B";
+      }
 
-function updUI(){document.getElementById('bc').textContent=blocks.length+' blocks'}
+      function updUI() {
+        document.getElementById("bc").textContent = blocks.length + " blocks";
+      }
 
-// Clear/Examples
-document.getElementById('btnClear').addEventListener('click',()=>{
-  blocks.forEach(b=>scene.remove(b.mesh));conns.forEach(c=>{if(c.line)scene.remove(c.line)});
-  blocks=[];conns=[];nid=0;document.getElementById('hint').style.opacity='1';updUI();genCode();
-});
+      // Clear/Examples
+      document.getElementById("btnClear").addEventListener("click", () => {
+        blocks.forEach((b) => scene.remove(b.mesh));
+        conns.forEach((c) => {
+          if (c.line) scene.remove(c.line);
+        });
+        blocks = [];
+        conns = [];
+        nid = 0;
+        document.getElementById("hint").style.opacity = "1";
+        updUI();
+        genCode();
+      });
 
-function loadExample(list){
-  document.getElementById('btnClear').click();
-  setTimeout(()=>list.forEach((t,i)=>setTimeout(()=>{
-    const d=BD[t];place(t,new THREE.Vector3(i*2.6-list.length*1.3,d.g[1]/2,0));
-  },i*180)),50);
-}
+      function loadExample(list) {
+        document.getElementById("btnClear").click();
+        setTimeout(
+          () =>
+            list.forEach((t, i) =>
+              setTimeout(() => {
+                const d = BD[t];
+                place(
+                  t,
+                  new THREE.Vector3(i * 2.6 - list.length * 1.3, d.g[1] / 2, 0),
+                );
+              }, i * 180),
+            ),
+          50,
+        );
+      }
 
-document.getElementById('btnEx').addEventListener('click',()=>loadExample(['input','conv2d','relu','maxpool','conv2d','relu','flatten','linear','softmax']));
-document.getElementById('btnTx').addEventListener('click',()=>loadExample(['input','embedding','layernorm','attention','layernorm','linear','gelu','linear','softmax']));
-document.getElementById('btnAe').addEventListener('click',()=>loadExample(['input','linear','relu','linear','relu','linear','relu','linear','sigmoid']));
-document.getElementById('btnLstm').addEventListener('click',()=>loadExample(['input','embedding','lstm','dropout','linear','softmax']));
+      document
+        .getElementById("btnEx")
+        .addEventListener("click", () =>
+          loadExample([
+            "input",
+            "conv2d",
+            "relu",
+            "maxpool",
+            "conv2d",
+            "relu",
+            "flatten",
+            "linear",
+            "softmax",
+          ]),
+        );
+      document
+        .getElementById("btnTx")
+        .addEventListener("click", () =>
+          loadExample([
+            "input",
+            "embedding",
+            "layernorm",
+            "attention",
+            "layernorm",
+            "linear",
+            "gelu",
+            "linear",
+            "softmax",
+          ]),
+        );
+      document
+        .getElementById("btnAe")
+        .addEventListener("click", () =>
+          loadExample([
+            "input",
+            "linear",
+            "relu",
+            "linear",
+            "relu",
+            "linear",
+            "relu",
+            "linear",
+            "sigmoid",
+          ]),
+        );
+      document
+        .getElementById("btnLstm")
+        .addEventListener("click", () =>
+          loadExample([
+            "input",
+            "embedding",
+            "lstm",
+            "dropout",
+            "linear",
+            "softmax",
+          ]),
+        );
 
-// Resize
-function onR(){const r=cva.getBoundingClientRect();cam.aspect=r.width/r.height;cam.updateProjectionMatrix();ren.setSize(r.width,r.height)}
-window.addEventListener('resize',onR);
+      // Resize
+      function onR() {
+        const r = cva.getBoundingClientRect();
+        cam.aspect = r.width / r.height;
+        cam.updateProjectionMatrix();
+        ren.setSize(r.width, r.height);
+      }
+      window.addEventListener("resize", onR);
 
-// Animate
-let t=0;
-(function anim(){
-  requestAnimationFrame(anim);t+=.01;
-  blocks.forEach((b,i)=>{
-    const d=BD[b.type];
-    b.mesh.position.y=d.g[1]/2+Math.sin(t*1.5+i*.7)*.04;
-    b.mesh.rotation.y=Math.sin(t*.5+i*1.1)*.025;
-  });
-  conns.forEach(c=>{const a=blocks.find(b=>b.id===c.from),b=blocks.find(x=>x.id===c.to);
-  if(a&&b&&c.line){const m=new THREE.Vector3().addVectors(a.mesh.position,b.mesh.position).multiplyScalar(.5);m.y+=.4;
-  c.line.geometry.setFromPoints(new THREE.QuadraticBezierCurve3(a.mesh.position.clone(),m,b.mesh.position.clone()).getPoints(20))}});
-  ren.render(scene,cam);
-})();
+      // Animate
+      let t = 0;
+      (function anim() {
+        requestAnimationFrame(anim);
+        t += 0.01;
+        blocks.forEach((b, i) => {
+          const d = BD[b.type];
+          b.mesh.position.y = d.g[1] / 2 + Math.sin(t * 1.5 + i * 0.7) * 0.04;
+          b.mesh.rotation.y = Math.sin(t * 0.5 + i * 1.1) * 0.025;
+        });
+        conns.forEach((c) => {
+          const a = blocks.find((b) => b.id === c.from),
+            b = blocks.find((x) => x.id === c.to);
+          if (a && b && c.line) {
+            const m = new THREE.Vector3()
+              .addVectors(a.mesh.position, b.mesh.position)
+              .multiplyScalar(0.5);
+            m.y += 0.4;
+            c.line.geometry.setFromPoints(
+              new THREE.QuadraticBezierCurve3(
+                a.mesh.position.clone(),
+                m,
+                b.mesh.position.clone(),
+              ).getPoints(20),
+            );
+          }
+        });
+        ren.render(scene, cam);
+      })();
 
-updCam();onR();
-setTimeout(()=>document.getElementById('btnEx').click(),700);
-</script>
-</body>
+      updCam();
+      onR();
+      setTimeout(() => document.getElementById("btnEx").click(), 700);
+    </script>
+  </body>
 </html>

@@ -1,615 +1,710 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>visual-web-ai</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
     <style>
-        :root {
-            --bg: #0a0a0f;
-            --surface: #12121a;
-            --surface2: #1a1a26;
-            --border: rgba(255,255,255,0.06);
-            --text: #e8e8ed;
-            --text-dim: rgba(255,255,255,0.45);
-            --text-muted: rgba(255,255,255,0.25);
-            --accent: #5b8aff;
-            --accent2: #ff6b5b;
-            --accent3: #4ade80;
-            --green: #4ade80;
-            --orange: #fb923c;
-            --mono: 'JetBrains Mono', monospace;
-            --sans: 'DM Sans', -apple-system, sans-serif;
+      :root {
+        --bg: #0a0a0f;
+        --surface: #12121a;
+        --surface2: #1a1a26;
+        --border: rgba(255, 255, 255, 0.06);
+        --text: #e8e8ed;
+        --text-dim: rgba(255, 255, 255, 0.45);
+        --text-muted: rgba(255, 255, 255, 0.25);
+        --accent: #5b8aff;
+        --accent2: #ff6b5b;
+        --accent3: #4ade80;
+        --green: #4ade80;
+        --orange: #fb923c;
+        --mono: "JetBrains Mono", monospace;
+        --sans: "DM Sans", -apple-system, sans-serif;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: var(--sans);
+        background: var(--bg);
+        color: var(--text);
+        overflow-x: hidden;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ===== GRAIN OVERLAY ===== */
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: url('data:image/svg+xml,<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(%23n)" opacity="0.04"/></svg>');
+        pointer-events: none;
+        z-index: 9999;
+      }
+
+      /* ===== HERO ===== */
+      .hero {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 60px clamp(24px, 6vw, 120px);
+        position: relative;
+      }
+
+      .hero::before {
+        content: "";
+        position: absolute;
+        top: -20%;
+        right: -10%;
+        width: 600px;
+        height: 600px;
+        background: radial-gradient(
+          circle,
+          rgba(91, 138, 255, 0.08) 0%,
+          transparent 70%
+        );
+        pointer-events: none;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        bottom: -10%;
+        left: -5%;
+        width: 400px;
+        height: 400px;
+        background: radial-gradient(
+          circle,
+          rgba(255, 107, 91, 0.06) 0%,
+          transparent 70%
+        );
+        pointer-events: none;
+      }
+
+      .tag {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 24px;
+        opacity: 0;
+        animation: fadeUp 0.6s ease forwards 0.2s;
+      }
+
+      h1 {
+        font-family: var(--mono);
+        font-size: clamp(36px, 6vw, 72px);
+        font-weight: 600;
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+        margin-bottom: 32px;
+        opacity: 0;
+        animation: fadeUp 0.6s ease forwards 0.35s;
+      }
+
+      h1 .highlight {
+        background: linear-gradient(135deg, var(--accent), var(--accent2));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .subtitle {
+        font-size: clamp(16px, 2vw, 22px);
+        color: var(--text-dim);
+        max-width: 640px;
+        line-height: 1.7;
+        margin-bottom: 48px;
+        opacity: 0;
+        animation: fadeUp 0.6s ease forwards 0.5s;
+      }
+
+      .hero-actions {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        opacity: 0;
+        animation: fadeUp 0.6s ease forwards 0.65s;
+      }
+
+      .btn {
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 500;
+        padding: 14px 28px;
+        border-radius: 8px;
+        text-decoration: none;
+        transition: all 0.2s;
+        cursor: pointer;
+        border: none;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .btn-primary:hover {
+        background: #4a7aff;
+        transform: translateY(-1px);
+      }
+
+      .btn-ghost {
+        background: transparent;
+        color: var(--text-dim);
+        border: 1px solid var(--border);
+      }
+      .btn-ghost:hover {
+        color: var(--text);
+        border-color: rgba(255, 255, 255, 0.15);
+      }
+
+      /* ===== ARCHITECTURE SECTION ===== */
+      section {
+        padding: 100px clamp(24px, 6vw, 120px);
+      }
+
+      .section-label {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin-bottom: 16px;
+      }
+
+      h2 {
+        font-family: var(--mono);
+        font-size: clamp(24px, 3.5vw, 40px);
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        margin-bottom: 48px;
+      }
+
+      /* ===== PIPELINE DIAGRAM ===== */
+      .pipeline {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        overflow-x: auto;
+        padding: 40px 0;
+        margin-bottom: 64px;
+      }
+
+      .pipe-node {
+        flex-shrink: 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 24px 28px;
+        text-align: center;
+        min-width: 160px;
+        transition: all 0.3s;
+      }
+
+      .pipe-node:hover {
+        border-color: rgba(91, 138, 255, 0.3);
+        transform: translateY(-4px);
+        box-shadow: 0 12px 40px rgba(91, 138, 255, 0.08);
+      }
+
+      .pipe-node .icon {
+        font-size: 28px;
+        margin-bottom: 12px;
+      }
+
+      .pipe-node h4 {
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 500;
+        margin-bottom: 6px;
+      }
+
+      .pipe-node p {
+        font-size: 12px;
+        color: var(--text-dim);
+        line-height: 1.5;
+      }
+
+      .pipe-arrow {
+        flex-shrink: 0;
+        width: 48px;
+        text-align: center;
+        color: var(--text-muted);
+        font-family: var(--mono);
+        font-size: 18px;
+      }
+
+      /* ===== OP GRID ===== */
+      .op-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 16px;
+        margin-bottom: 80px;
+      }
+
+      .op-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 28px;
+        transition: all 0.3s;
+      }
+
+      .op-card:hover {
+        border-color: rgba(255, 255, 255, 0.1);
+        transform: translateY(-2px);
+      }
+
+      .op-card .count {
+        font-family: var(--mono);
+        font-size: 32px;
+        font-weight: 600;
+        background: linear-gradient(135deg, var(--accent), var(--accent3));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 8px;
+      }
+
+      .op-card h4 {
+        font-family: var(--mono);
+        font-size: 14px;
+        font-weight: 500;
+        margin-bottom: 10px;
+      }
+
+      .op-card p {
+        font-size: 13px;
+        color: var(--text-dim);
+        line-height: 1.6;
+      }
+
+      .op-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 14px;
+      }
+
+      .op-tag {
+        font-family: var(--mono);
+        font-size: 10px;
+        padding: 4px 10px;
+        border-radius: 100px;
+        background: rgba(91, 138, 255, 0.1);
+        color: var(--accent);
+      }
+
+      .op-tag.green {
+        background: rgba(74, 222, 128, 0.1);
+        color: var(--green);
+      }
+      .op-tag.orange {
+        background: rgba(251, 146, 60, 0.1);
+        color: var(--orange);
+      }
+      .op-tag.red {
+        background: rgba(255, 107, 91, 0.1);
+        color: var(--accent2);
+      }
+
+      /* ===== CODE EXAMPLE ===== */
+      .code-section {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        overflow: hidden;
+        margin-bottom: 80px;
+      }
+
+      .code-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 16px 24px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface2);
+      }
+
+      .code-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+      .code-dot.red {
+        background: #ff5f56;
+      }
+      .code-dot.yellow {
+        background: #ffbd2e;
+      }
+      .code-dot.green {
+        background: #27c93f;
+      }
+
+      .code-filename {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--text-dim);
+        margin-left: 8px;
+      }
+
+      .code-body {
+        padding: 28px;
+        overflow-x: auto;
+      }
+
+      .code-body pre {
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.85;
+        color: var(--text-dim);
+      }
+
+      .code-body .kw {
+        color: var(--accent);
+      }
+      .code-body .fn {
+        color: var(--accent2);
+      }
+      .code-body .str {
+        color: var(--green);
+      }
+      .code-body .num {
+        color: var(--orange);
+      }
+      .code-body .cm {
+        color: var(--text-muted);
+        font-style: italic;
+      }
+      .code-body .op {
+        color: var(--text);
+      }
+
+      /* ===== STACK SECTION ===== */
+      .stack-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 12px;
+      }
+
+      .stack-item {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 20px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        transition: all 0.2s;
+      }
+
+      .stack-item:hover {
+        border-color: rgba(255, 255, 255, 0.1);
+      }
+
+      .stack-icon {
+        font-size: 22px;
+        width: 40px;
+        height: 40px;
+        display: grid;
+        place-items: center;
+        background: var(--surface2);
+        border-radius: 8px;
+        flex-shrink: 0;
+      }
+
+      .stack-item h4 {
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 500;
+      }
+
+      .stack-item p {
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-top: 2px;
+      }
+
+      /* ===== FOOTER ===== */
+      footer {
+        padding: 48px clamp(24px, 6vw, 120px);
+        border-top: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+
+      footer p {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+
+      footer a {
+        color: var(--text-dim);
+        text-decoration: none;
+        font-family: var(--mono);
+        font-size: 12px;
+        transition: color 0.2s;
+      }
+      footer a:hover {
+        color: var(--text);
+      }
+
+      /* ===== ANIMATIONS ===== */
+      @keyframes fadeUp {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
         }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        body {
-            font-family: var(--sans);
-            background: var(--bg);
-            color: var(--text);
-            overflow-x: hidden;
-            -webkit-font-smoothing: antialiased;
+        to {
+          opacity: 1;
+          transform: translateY(0);
         }
+      }
 
-        /* ===== GRAIN OVERLAY ===== */
-        body::after {
-            content: '';
-            position: fixed;
-            inset: 0;
-            background: url('data:image/svg+xml,<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(%23n)" opacity="0.04"/></svg>');
-            pointer-events: none;
-            z-index: 9999;
-        }
+      /* ===== DIVIDER ===== */
+      .divider {
+        height: 1px;
+        background: var(--border);
+        margin: 0 clamp(24px, 6vw, 120px);
+      }
 
-        /* ===== HERO ===== */
-        .hero {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            padding: 60px clamp(24px, 6vw, 120px);
-            position: relative;
-        }
-
-        .hero::before {
-            content: '';
-            position: absolute;
-            top: -20%;
-            right: -10%;
-            width: 600px;
-            height: 600px;
-            background: radial-gradient(circle, rgba(91,138,255,0.08) 0%, transparent 70%);
-            pointer-events: none;
-        }
-
-        .hero::after {
-            content: '';
-            position: absolute;
-            bottom: -10%;
-            left: -5%;
-            width: 400px;
-            height: 400px;
-            background: radial-gradient(circle, rgba(255,107,91,0.06) 0%, transparent 70%);
-            pointer-events: none;
-        }
-
-        .tag {
-            font-family: var(--mono);
-            font-size: 11px;
-            font-weight: 500;
-            letter-spacing: 0.15em;
-            text-transform: uppercase;
-            color: var(--accent);
-            margin-bottom: 24px;
-            opacity: 0;
-            animation: fadeUp 0.6s ease forwards 0.2s;
-        }
-
-        h1 {
-            font-family: var(--mono);
-            font-size: clamp(36px, 6vw, 72px);
-            font-weight: 600;
-            line-height: 1.05;
-            letter-spacing: -0.03em;
-            margin-bottom: 32px;
-            opacity: 0;
-            animation: fadeUp 0.6s ease forwards 0.35s;
-        }
-
-        h1 .highlight {
-            background: linear-gradient(135deg, var(--accent), var(--accent2));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .subtitle {
-            font-size: clamp(16px, 2vw, 22px);
-            color: var(--text-dim);
-            max-width: 640px;
-            line-height: 1.7;
-            margin-bottom: 48px;
-            opacity: 0;
-            animation: fadeUp 0.6s ease forwards 0.5s;
-        }
-
-        .hero-actions {
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-            opacity: 0;
-            animation: fadeUp 0.6s ease forwards 0.65s;
-        }
-
-        .btn {
-            font-family: var(--mono);
-            font-size: 13px;
-            font-weight: 500;
-            padding: 14px 28px;
-            border-radius: 8px;
-            text-decoration: none;
-            transition: all 0.2s;
-            cursor: pointer;
-            border: none;
-        }
-
-        .btn-primary {
-            background: var(--accent);
-            color: #fff;
-        }
-        .btn-primary:hover { background: #4a7aff; transform: translateY(-1px); }
-
-        .btn-ghost {
-            background: transparent;
-            color: var(--text-dim);
-            border: 1px solid var(--border);
-        }
-        .btn-ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.15); }
-
-        /* ===== ARCHITECTURE SECTION ===== */
-        section {
-            padding: 100px clamp(24px, 6vw, 120px);
-        }
-
-        .section-label {
-            font-family: var(--mono);
-            font-size: 10px;
-            font-weight: 500;
-            letter-spacing: 0.2em;
-            text-transform: uppercase;
-            color: var(--text-muted);
-            margin-bottom: 16px;
-        }
-
-        h2 {
-            font-family: var(--mono);
-            font-size: clamp(24px, 3.5vw, 40px);
-            font-weight: 600;
-            letter-spacing: -0.02em;
-            margin-bottom: 48px;
-        }
-
-        /* ===== PIPELINE DIAGRAM ===== */
+      /* ===== RESPONSIVE ===== */
+      @media (max-width: 768px) {
         .pipeline {
-            display: flex;
-            align-items: center;
-            gap: 0;
-            overflow-x: auto;
-            padding: 40px 0;
-            margin-bottom: 64px;
+          flex-direction: column;
+          align-items: stretch;
         }
-
-        .pipe-node {
-            flex-shrink: 0;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 24px 28px;
-            text-align: center;
-            min-width: 160px;
-            transition: all 0.3s;
-        }
-
-        .pipe-node:hover {
-            border-color: rgba(91,138,255,0.3);
-            transform: translateY(-4px);
-            box-shadow: 0 12px 40px rgba(91,138,255,0.08);
-        }
-
-        .pipe-node .icon {
-            font-size: 28px;
-            margin-bottom: 12px;
-        }
-
-        .pipe-node h4 {
-            font-family: var(--mono);
-            font-size: 13px;
-            font-weight: 500;
-            margin-bottom: 6px;
-        }
-
-        .pipe-node p {
-            font-size: 12px;
-            color: var(--text-dim);
-            line-height: 1.5;
-        }
-
         .pipe-arrow {
-            flex-shrink: 0;
-            width: 48px;
-            text-align: center;
-            color: var(--text-muted);
-            font-family: var(--mono);
-            font-size: 18px;
+          transform: rotate(90deg);
+          width: auto;
+          padding: 8px 0;
         }
-
-        /* ===== OP GRID ===== */
         .op-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 16px;
-            margin-bottom: 80px;
+          grid-template-columns: 1fr;
         }
-
-        .op-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 28px;
-            transition: all 0.3s;
-        }
-
-        .op-card:hover {
-            border-color: rgba(255,255,255,0.1);
-            transform: translateY(-2px);
-        }
-
-        .op-card .count {
-            font-family: var(--mono);
-            font-size: 32px;
-            font-weight: 600;
-            background: linear-gradient(135deg, var(--accent), var(--accent3));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin-bottom: 8px;
-        }
-
-        .op-card h4 {
-            font-family: var(--mono);
-            font-size: 14px;
-            font-weight: 500;
-            margin-bottom: 10px;
-        }
-
-        .op-card p {
-            font-size: 13px;
-            color: var(--text-dim);
-            line-height: 1.6;
-        }
-
-        .op-tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 14px;
-        }
-
-        .op-tag {
-            font-family: var(--mono);
-            font-size: 10px;
-            padding: 4px 10px;
-            border-radius: 100px;
-            background: rgba(91,138,255,0.1);
-            color: var(--accent);
-        }
-
-        .op-tag.green { background: rgba(74,222,128,0.1); color: var(--green); }
-        .op-tag.orange { background: rgba(251,146,60,0.1); color: var(--orange); }
-        .op-tag.red { background: rgba(255,107,91,0.1); color: var(--accent2); }
-
-        /* ===== CODE EXAMPLE ===== */
-        .code-section {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            overflow: hidden;
-            margin-bottom: 80px;
-        }
-
-        .code-header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 16px 24px;
-            border-bottom: 1px solid var(--border);
-            background: var(--surface2);
-        }
-
-        .code-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-        }
-        .code-dot.red { background: #ff5f56; }
-        .code-dot.yellow { background: #ffbd2e; }
-        .code-dot.green { background: #27c93f; }
-
-        .code-filename {
-            font-family: var(--mono);
-            font-size: 12px;
-            color: var(--text-dim);
-            margin-left: 8px;
-        }
-
-        .code-body {
-            padding: 28px;
-            overflow-x: auto;
-        }
-
-        .code-body pre {
-            font-family: var(--mono);
-            font-size: 13px;
-            line-height: 1.85;
-            color: var(--text-dim);
-        }
-
-        .code-body .kw { color: var(--accent); }
-        .code-body .fn { color: var(--accent2); }
-        .code-body .str { color: var(--green); }
-        .code-body .num { color: var(--orange); }
-        .code-body .cm { color: var(--text-muted); font-style: italic; }
-        .code-body .op { color: var(--text); }
-
-        /* ===== STACK SECTION ===== */
-        .stack-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 12px;
-        }
-
-        .stack-item {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            padding: 20px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            transition: all 0.2s;
-        }
-
-        .stack-item:hover { border-color: rgba(255,255,255,0.1); }
-
-        .stack-icon {
-            font-size: 22px;
-            width: 40px;
-            height: 40px;
-            display: grid;
-            place-items: center;
-            background: var(--surface2);
-            border-radius: 8px;
-            flex-shrink: 0;
-        }
-
-        .stack-item h4 {
-            font-family: var(--mono);
-            font-size: 13px;
-            font-weight: 500;
-        }
-
-        .stack-item p {
-            font-size: 11px;
-            color: var(--text-dim);
-            margin-top: 2px;
-        }
-
-        /* ===== FOOTER ===== */
-        footer {
-            padding: 48px clamp(24px, 6vw, 120px);
-            border-top: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 16px;
-        }
-
-        footer p {
-            font-family: var(--mono);
-            font-size: 12px;
-            color: var(--text-muted);
-        }
-
-        footer a {
-            color: var(--text-dim);
-            text-decoration: none;
-            font-family: var(--mono);
-            font-size: 12px;
-            transition: color 0.2s;
-        }
-        footer a:hover { color: var(--text); }
-
-        /* ===== ANIMATIONS ===== */
-        @keyframes fadeUp {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        /* ===== DIVIDER ===== */
-        .divider {
-            height: 1px;
-            background: var(--border);
-            margin: 0 clamp(24px, 6vw, 120px);
-        }
-
-        /* ===== RESPONSIVE ===== */
-        @media (max-width: 768px) {
-            .pipeline { flex-direction: column; align-items: stretch; }
-            .pipe-arrow { transform: rotate(90deg); width: auto; padding: 8px 0; }
-            .op-grid { grid-template-columns: 1fr; }
-        }
+      }
     </style>
-</head>
-<body>
-
+  </head>
+  <body>
     <!-- HERO -->
     <div class="hero">
-        <div class="tag">WebGPU × ReScript × WGSL</div>
-        <h1>visual<span class="highlight">-web-</span>ai</h1>
-        <p class="subtitle">
-            A neural network compiler and runtime that runs entirely in the browser.
-            ReScript generates optimized WGSL compute shaders. WebGPU executes them on your GPU.
-            Autograd handles backpropagation. No server required.
-        </p>
-        <div class="hero-actions">
-            <a href="demo.html" class="btn btn-primary">Try the Builder →</a>
-            <a href="https://github.com/graphpilled/visual-web-ai" class="btn btn-ghost">View Source</a>
-            <a href="#architecture" class="btn btn-ghost">How it works →</a>
-        </div>
+      <div class="tag">WebGPU × ReScript × WGSL</div>
+      <h1>visual<span class="highlight">-web-</span>ai</h1>
+      <p class="subtitle">
+        A neural network compiler and runtime that runs entirely in the browser.
+        ReScript generates optimized WGSL compute shaders. WebGPU executes them
+        on your GPU. Autograd handles backpropagation. No server required.
+      </p>
+      <div class="hero-actions">
+        <a href="demo.html" class="btn btn-primary">Try the Builder →</a>
+        <a
+          href="https://github.com/graphpilled/visual-web-ai"
+          class="btn btn-ghost"
+          >View Source</a
+        >
+        <a href="#architecture" class="btn btn-ghost">How it works →</a>
+      </div>
     </div>
 
     <div class="divider"></div>
 
     <!-- ARCHITECTURE -->
     <section id="architecture">
-        <div class="section-label">Architecture</div>
-        <h2>Compilation Pipeline</h2>
+      <div class="section-label">Architecture</div>
+      <h2>Compilation Pipeline</h2>
 
-        <div class="pipeline">
-            <div class="pipe-node">
-                <div class="icon"></div>
-                <h4>Types.res</h4>
-                <p>160+ ops defined as algebraic types with shape, dtype, graph</p>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-node">
-                <div class="icon"></div>
-                <h4>Shape.res</h4>
-                <p>Shape inference with broadcasting, reduction, convolution rules</p>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-node">
-                <div class="icon"></div>
-                <h4>Codegen.res</h4>
-                <p>3500+ lines of WGSL shader generation for every op</p>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-node">
-                <div class="icon"></div>
-                <h4>Compiler.res</h4>
-                <p>Graph compilation, buffer allocation, dispatch scheduling</p>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-node">
-                <div class="icon"></div>
-                <h4>runtime.js</h4>
-                <p>WebGPU execution, pipeline caching, buffer management</p>
-            </div>
+      <div class="pipeline">
+        <div class="pipe-node">
+          <div class="icon"></div>
+          <h4>Types.res</h4>
+          <p>160+ ops defined as algebraic types with shape, dtype, graph</p>
         </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="icon"></div>
+          <h4>Shape.res</h4>
+          <p>Shape inference with broadcasting, reduction, convolution rules</p>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="icon"></div>
+          <h4>Codegen.res</h4>
+          <p>3500+ lines of WGSL shader generation for every op</p>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="icon"></div>
+          <h4>Compiler.res</h4>
+          <p>Graph compilation, buffer allocation, dispatch scheduling</p>
+        </div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node">
+          <div class="icon"></div>
+          <h4>runtime.js</h4>
+          <p>WebGPU execution, pipeline caching, buffer management</p>
+        </div>
+      </div>
     </section>
 
     <div class="divider"></div>
 
     <!-- OPERATIONS -->
     <section>
-        <div class="section-label">Capabilities</div>
-        <h2>What it compiles</h2>
+      <div class="section-label">Capabilities</div>
+      <h2>What it compiles</h2>
 
-        <div class="op-grid">
-            <div class="op-card">
-                <div class="count">30+</div>
-                <h4>Element-wise ops</h4>
-                <p>Unary, binary, trigonometric, and activation functions — all compiled to parallel WGSL shaders with broadcasting.</p>
-                <div class="op-tags">
-                    <span class="op-tag">ReLU</span>
-                    <span class="op-tag">GeLU</span>
-                    <span class="op-tag">SiLU</span>
-                    <span class="op-tag">Sigmoid</span>
-                    <span class="op-tag">Tanh</span>
-                    <span class="op-tag">Mish</span>
-                </div>
-            </div>
-
-            <div class="op-card">
-                <div class="count">MatMul</div>
-                <h4>Linear algebra</h4>
-                <p>Tiled matrix multiplication, batched matmul, INT4 quantized matmul with configurable group size, Gemm, Einsum.</p>
-                <div class="op-tags">
-                    <span class="op-tag green">MatMul</span>
-                    <span class="op-tag green">BatchedMatMul</span>
-                    <span class="op-tag green">INT4</span>
-                </div>
-            </div>
-
-            <div class="op-card">
-                <div class="count">10</div>
-                <h4>Reductions</h4>
-                <p>Sum, Mean, Max, Min, Prod, L1/L2 norm, LogSumExp — with arbitrary axis selection and keepDims.</p>
-                <div class="op-tags">
-                    <span class="op-tag orange">Sum</span>
-                    <span class="op-tag orange">Mean</span>
-                    <span class="op-tag orange">LogSumExp</span>
-                </div>
-            </div>
-
-            <div class="op-card">
-                <div class="count">6</div>
-                <h4>Normalization</h4>
-                <p>BatchNorm, LayerNorm, RMSNorm, InstanceNorm, GroupNorm, LRN — critical for stable training and inference.</p>
-                <div class="op-tags">
-                    <span class="op-tag red">LayerNorm</span>
-                    <span class="op-tag red">RMSNorm</span>
-                    <span class="op-tag red">BatchNorm</span>
-                </div>
-            </div>
-
-            <div class="op-card">
-                <div class="count">Conv</div>
-                <h4>Convolution & Pooling</h4>
-                <p>1D/2D/3D convolutions, transposed convolutions, depthwise separable, max/avg/global/adaptive pooling.</p>
-                <div class="op-tags">
-                    <span class="op-tag">Conv2D</span>
-                    <span class="op-tag">MaxPool2D</span>
-                    <span class="op-tag">GlobalAvgPool</span>
-                </div>
-            </div>
-
-            <div class="op-card">
-                <div class="count">Attn</div>
-                <h4>Attention & Sequence</h4>
-                <p>Scaled dot-product attention with causal masking, multi-head attention, RNN, LSTM, GRU cells.</p>
-                <div class="op-tags">
-                    <span class="op-tag green">Attention</span>
-                    <span class="op-tag green">LSTM</span>
-                    <span class="op-tag green">GRU</span>
-                </div>
-            </div>
-
-            <div class="op-card">
-                <div class="count">∇</div>
-                <h4>Autograd</h4>
-                <p>Full automatic differentiation with gradient tape, backward kernel generation for every differentiable op. Adam, AdamW, SGD optimizers.</p>
-                <div class="op-tags">
-                    <span class="op-tag orange">Backward</span>
-                    <span class="op-tag orange">Adam</span>
-                    <span class="op-tag orange">GradTape</span>
-                </div>
-            </div>
-
-            <div class="op-card">
-                <div class="count">nn.*</div>
-                <h4>High-level API</h4>
-                <p>PyTorch-style module system — Sequential, Linear, Conv2D, LSTM, Embedding, BatchNorm, Dropout, with .forward() and .backward().</p>
-                <div class="op-tags">
-                    <span class="op-tag red">nn.Sequential</span>
-                    <span class="op-tag red">nn.Linear</span>
-                    <span class="op-tag red">optim.Adam</span>
-                </div>
-            </div>
+      <div class="op-grid">
+        <div class="op-card">
+          <div class="count">30+</div>
+          <h4>Element-wise ops</h4>
+          <p>
+            Unary, binary, trigonometric, and activation functions — all
+            compiled to parallel WGSL shaders with broadcasting.
+          </p>
+          <div class="op-tags">
+            <span class="op-tag">ReLU</span>
+            <span class="op-tag">GeLU</span>
+            <span class="op-tag">SiLU</span>
+            <span class="op-tag">Sigmoid</span>
+            <span class="op-tag">Tanh</span>
+            <span class="op-tag">Mish</span>
+          </div>
         </div>
+
+        <div class="op-card">
+          <div class="count">MatMul</div>
+          <h4>Linear algebra</h4>
+          <p>
+            Tiled matrix multiplication, batched matmul, INT4 quantized matmul
+            with configurable group size, Gemm, Einsum.
+          </p>
+          <div class="op-tags">
+            <span class="op-tag green">MatMul</span>
+            <span class="op-tag green">BatchedMatMul</span>
+            <span class="op-tag green">INT4</span>
+          </div>
+        </div>
+
+        <div class="op-card">
+          <div class="count">10</div>
+          <h4>Reductions</h4>
+          <p>
+            Sum, Mean, Max, Min, Prod, L1/L2 norm, LogSumExp — with arbitrary
+            axis selection and keepDims.
+          </p>
+          <div class="op-tags">
+            <span class="op-tag orange">Sum</span>
+            <span class="op-tag orange">Mean</span>
+            <span class="op-tag orange">LogSumExp</span>
+          </div>
+        </div>
+
+        <div class="op-card">
+          <div class="count">6</div>
+          <h4>Normalization</h4>
+          <p>
+            BatchNorm, LayerNorm, RMSNorm, InstanceNorm, GroupNorm, LRN —
+            critical for stable training and inference.
+          </p>
+          <div class="op-tags">
+            <span class="op-tag red">LayerNorm</span>
+            <span class="op-tag red">RMSNorm</span>
+            <span class="op-tag red">BatchNorm</span>
+          </div>
+        </div>
+
+        <div class="op-card">
+          <div class="count">Conv</div>
+          <h4>Convolution & Pooling</h4>
+          <p>
+            1D/2D/3D convolutions, transposed convolutions, depthwise separable,
+            max/avg/global/adaptive pooling.
+          </p>
+          <div class="op-tags">
+            <span class="op-tag">Conv2D</span>
+            <span class="op-tag">MaxPool2D</span>
+            <span class="op-tag">GlobalAvgPool</span>
+          </div>
+        </div>
+
+        <div class="op-card">
+          <div class="count">Attn</div>
+          <h4>Attention & Sequence</h4>
+          <p>
+            Scaled dot-product attention with causal masking, multi-head
+            attention, RNN, LSTM, GRU cells.
+          </p>
+          <div class="op-tags">
+            <span class="op-tag green">Attention</span>
+            <span class="op-tag green">LSTM</span>
+            <span class="op-tag green">GRU</span>
+          </div>
+        </div>
+
+        <div class="op-card">
+          <div class="count">∇</div>
+          <h4>Autograd</h4>
+          <p>
+            Full automatic differentiation with gradient tape, backward kernel
+            generation for every differentiable op. Adam, AdamW, SGD optimizers.
+          </p>
+          <div class="op-tags">
+            <span class="op-tag orange">Backward</span>
+            <span class="op-tag orange">Adam</span>
+            <span class="op-tag orange">GradTape</span>
+          </div>
+        </div>
+
+        <div class="op-card">
+          <div class="count">nn.*</div>
+          <h4>High-level API</h4>
+          <p>
+            PyTorch-style module system — Sequential, Linear, Conv2D, LSTM,
+            Embedding, BatchNorm, Dropout, with .forward() and .backward().
+          </p>
+          <div class="op-tags">
+            <span class="op-tag red">nn.Sequential</span>
+            <span class="op-tag red">nn.Linear</span>
+            <span class="op-tag red">optim.Adam</span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <div class="divider"></div>
 
     <!-- CODE EXAMPLE -->
     <section>
-        <div class="section-label">Usage</div>
-        <h2>Feels like PyTorch</h2>
+      <div class="section-label">Usage</div>
+      <h2>Feels like PyTorch</h2>
 
-        <div class="code-section">
-            <div class="code-header">
-                <div class="code-dot red"></div>
-                <div class="code-dot yellow"></div>
-                <div class="code-dot green"></div>
-                <span class="code-filename">train.js</span>
-            </div>
-            <div class="code-body">
-<pre><span class="kw">import</span> { Tensor, nn, optim, init } <span class="kw">from</span> <span class="str">'./nn.js'</span>;
+      <div class="code-section">
+        <div class="code-header">
+          <div class="code-dot red"></div>
+          <div class="code-dot yellow"></div>
+          <div class="code-dot green"></div>
+          <span class="code-filename">train.js</span>
+        </div>
+        <div class="code-body">
+          <pre><span class="kw">import</span> { Tensor, nn, optim, init } <span class="kw">from</span> <span class="str">'./nn.js'</span>;
 
 <span class="kw">await</span> <span class="fn">init</span>();  <span class="cm">// Initialize WebGPU</span>
 
@@ -630,18 +725,20 @@
   <span class="kw">await</span> loss.<span class="fn">backward</span>();        <span class="cm">// Autograd computes gradients on GPU</span>
   <span class="kw">await</span> optimizer.<span class="fn">step</span>();      <span class="cm">// Adam update via WGSL shader</span>
 }</pre>
-            </div>
         </div>
+      </div>
 
-        <div class="code-section">
-            <div class="code-header">
-                <div class="code-dot red"></div>
-                <div class="code-dot yellow"></div>
-                <div class="code-dot green"></div>
-                <span class="code-filename">how the compiler works (ReScript → WGSL)</span>
-            </div>
-            <div class="code-body">
-<pre><span class="cm">// 1. Define operations as typed variants in ReScript</span>
+      <div class="code-section">
+        <div class="code-header">
+          <div class="code-dot red"></div>
+          <div class="code-dot yellow"></div>
+          <div class="code-dot green"></div>
+          <span class="code-filename"
+            >how the compiler works (ReScript → WGSL)</span
+          >
+        </div>
+        <div class="code-body">
+          <pre><span class="cm">// 1. Define operations as typed variants in ReScript</span>
 <span class="kw">type</span> op =
   | <span class="fn">MatMul</span>
   | <span class="fn">ReLU</span>
@@ -657,66 +754,67 @@ Codegen.<span class="fn">generate</span>(<span class="fn">MatMul</span>, [[<span
 <span class="cm">// → { wgsl: "@compute @workgroup_size(16,16)...", dispatch: [2, 4, 1] }</span>
 
 <span class="cm">// 4. Runtime executes on GPU via WebGPU API</span></pre>
-            </div>
         </div>
+      </div>
     </section>
 
     <div class="divider"></div>
 
     <!-- TECH STACK -->
     <section>
-        <div class="section-label">Stack</div>
-        <h2>Built with</h2>
-        <div class="stack-grid">
-            <div class="stack-item">
-                <div class="stack-icon">🟠</div>
-                <div>
-                    <h4>ReScript</h4>
-                    <p>Type-safe compiler core</p>
-                </div>
-            </div>
-            <div class="stack-item">
-                <div class="stack-icon"></div>
-                <div>
-                    <h4>WGSL</h4>
-                    <p>GPU compute shaders</p>
-                </div>
-            </div>
-            <div class="stack-item">
-                <div class="stack-icon"></div>
-                <div>
-                    <h4>WebGPU</h4>
-                    <p>Browser GPU runtime</p>
-                </div>
-            </div>
-            <div class="stack-item">
-                <div class="stack-icon"></div>
-                <div>
-                    <h4>esbuild</h4>
-                    <p>JS bundling</p>
-                </div>
-            </div>
-            <div class="stack-item">
-                <div class="stack-icon"></div>
-                <div>
-                    <h4>INT4 Quantization</h4>
-                    <p>GPTQ model support</p>
-                </div>
-            </div>
-            <div class="stack-item">
-                <div class="stack-icon"></div>
-                <div>
-                    <h4>Qwen 2.5</h4>
-                    <p>LLM inference target</p>
-                </div>
-            </div>
+      <div class="section-label">Stack</div>
+      <h2>Built with</h2>
+      <div class="stack-grid">
+        <div class="stack-item">
+          <div class="stack-icon">🟠</div>
+          <div>
+            <h4>ReScript</h4>
+            <p>Type-safe compiler core</p>
+          </div>
         </div>
+        <div class="stack-item">
+          <div class="stack-icon"></div>
+          <div>
+            <h4>WGSL</h4>
+            <p>GPU compute shaders</p>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-icon"></div>
+          <div>
+            <h4>WebGPU</h4>
+            <p>Browser GPU runtime</p>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-icon"></div>
+          <div>
+            <h4>esbuild</h4>
+            <p>JS bundling</p>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-icon"></div>
+          <div>
+            <h4>INT4 Quantization</h4>
+            <p>GPTQ model support</p>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-icon"></div>
+          <div>
+            <h4>Qwen 2.5</h4>
+            <p>LLM inference target</p>
+          </div>
+        </div>
+      </div>
     </section>
 
     <footer>
-        <p>visual-web-ai — MIT License</p>
-        <a href="https://github.com/graphpilled/visual-web-ai">github.com/graphpilled/visual-web-ai</a>
+      <p>visual-web-ai — MIT License</p>
+      <a href="https://github.com/graphpilled/visual-web-ai"
+        >github.com/graphpilled/visual-web-ai</a
+      >
     </footer>
-
-</body>
+  </body>
 </html>
