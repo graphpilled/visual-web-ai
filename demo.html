@@ -126,6 +126,24 @@
         overflow-y: auto;
         padding: 8px 0;
       }
+      .sb-title {
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--t);
+        padding: 8px 12px 6px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        border-bottom: 1px solid var(--bd);
+        margin-bottom: 4px;
+      }
+      .sb-title svg {
+        width: 12px;
+        height: 12px;
+        opacity: 0.5;
+      }
       .sidebar::-webkit-scrollbar {
         width: 2px;
       }
@@ -378,7 +396,9 @@
     </div>
     <div class="ghost" id="gh"></div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script>
+    <script type="module">
+      import { Compiler, Codegen, Shape } from './dist/bundle.js';
+
       const BD = {
         input: {
           n: "Input",
@@ -386,7 +406,7 @@
           col: "#5b8aff",
           ico: "⊳",
           g: [1.6, 0.45, 0.8],
-          p: { shape: [1, 28, 28] },
+          p: { shape: [1, 784] },
         },
         linear: {
           n: "Linear",
@@ -576,6 +596,10 @@
 
       // Sidebar
       const sb = document.getElementById("sb");
+      const sbTitle = document.createElement("div");
+      sbTitle.className = "sb-title";
+      sbTitle.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg> Drag to canvas`;
+      sb.appendChild(sbTitle);
       CATS.forEach(([k, label, ids]) => {
         let h = document.createElement("div");
         h.className = "shdr";
@@ -1472,15 +1496,187 @@
         }),
       );
 
-      // Code gen (same as before)
+
+      // ============================================================
+      // Real compiler integration
+      // ============================================================
+
+      // Build a real Compiler graph from the current block list
+      function buildGraph() {
+        const graph = Compiler.createGraph();
+        let lastId = null;
+        let lastShape = null;
+
+        for (const b of blocks) {
+          const d = BD[b.type];
+          let nodeId;
+
+          switch (b.type) {
+            case "input": {
+              const shape = d.p.shape;
+              nodeId = Compiler.input(graph, shape, "input");
+              lastShape = shape;
+              break;
+            }
+            case "linear": {
+              if (lastId === null) break;
+              nodeId = Compiler.dense(graph, lastId, d.p.units, "linear_" + b.id);
+              if (lastShape) lastShape = [...lastShape.slice(0, -1), d.p.units];
+              break;
+            }
+            case "embedding": {
+              if (lastId === null) break;
+              const w = Compiler.weight(graph, [d.p.vocab, d.p.dim], "embed_weight");
+              nodeId = Compiler.embedding(graph, lastId, w);
+              lastShape = lastShape ? [...lastShape, d.p.dim] : null;
+              break;
+            }
+            case "matmul": {
+              if (lastId === null) break;
+              nodeId = Compiler.matmul(graph, lastId, lastId);
+              break;
+            }
+            case "relu":
+              if (lastId === null) break;
+              nodeId = Compiler.relu(graph, lastId);
+              break;
+            case "gelu":
+              if (lastId === null) break;
+              nodeId = Compiler.gelu(graph, lastId);
+              break;
+            case "sigmoid":
+              if (lastId === null) break;
+              nodeId = Compiler.sigmoid(graph, lastId);
+              break;
+            case "tanh":
+              if (lastId === null) break;
+              nodeId = Compiler.tanh_(graph, lastId);
+              break;
+            case "silu":
+              if (lastId === null) break;
+              nodeId = Compiler.silu(graph, lastId);
+              break;
+            case "softmax":
+              if (lastId === null) break;
+              nodeId = Compiler.softmax(graph, lastId, d.p.axis);
+              break;
+            case "conv2d": {
+              if (lastId === null) break;
+              nodeId = Compiler.conv2d(
+                graph, lastId, d.p.filters, d.p.kernel, d.p.stride, "Same", "conv_" + b.id
+              );
+              break;
+            }
+            case "maxpool":
+              if (lastId === null) break;
+              nodeId = Compiler.maxPool2d(graph, lastId, d.p.kernel, d.p.stride);
+              break;
+            case "flatten":
+              if (lastId === null) break;
+              nodeId = Compiler.flatten(graph, lastId);
+              break;
+            case "layernorm":
+              if (lastId === null) break;
+              nodeId = Compiler.layerNorm(graph, lastId, [-1], d.p.eps);
+              break;
+            case "batchnorm":
+              if (lastId === null) break;
+              nodeId = Compiler.addNode(graph, {
+                TAG: "BatchNorm", epsilon: d.p.eps, momentum: 0.1
+              }, [lastId], undefined);
+              break;
+            case "rmsnorm":
+              if (lastId === null) break;
+              nodeId = Compiler.addNode(graph, {
+                TAG: "LayerNorm", axes: [-1], epsilon: d.p.eps
+              }, [lastId], undefined);
+              break;
+            case "attention": {
+              if (lastId === null) break;
+              const dim = d.p.dim;
+              const q = Compiler.dense(graph, lastId, dim, "attn_q_" + b.id);
+              const k = Compiler.dense(graph, lastId, dim, "attn_k_" + b.id);
+              const v = Compiler.dense(graph, lastId, dim, "attn_v_" + b.id);
+              const scaleFactor = 1.0 / Math.sqrt(dim / d.p.heads);
+              nodeId = Compiler.scaledDotProductAttention(graph, q, k, v, scaleFactor);
+              break;
+            }
+            case "reduce_sum":
+              if (lastId === null) break;
+              nodeId = Compiler.reduceSum(graph, lastId, d.p.axes, false);
+              break;
+            case "crossentropy":
+              if (lastId === null) break;
+              nodeId = Compiler.logSoftmax(graph, lastId);
+              break;
+            case "lstm": {
+              if (lastId === null) break;
+              nodeId = Compiler.lstm(graph, lastId, d.p.hidden, "lstm_" + b.id);
+              break;
+            }
+            case "dropout":
+              if (lastId === null) break;
+              nodeId = Compiler.addNode(graph, {
+                TAG: "Dropout", rate: d.p.rate
+              }, [lastId], undefined);
+              break;
+            default:
+              if (lastId === null) break;
+              try {
+                nodeId = Compiler.addNode(graph, b.type, [lastId], undefined);
+              } catch (e) {
+                nodeId = lastId;
+              }
+          }
+
+          if (nodeId !== undefined) lastId = nodeId;
+        }
+
+        if (lastId !== null) {
+          Compiler.markOutput(graph, lastId);
+        }
+
+        return graph;
+      }
+
+      let _compiled = null;
+
+      function compileBlocks() {
+        try {
+          const graph = buildGraph();
+          _compiled = Compiler.compile(graph);
+          return _compiled;
+        } catch (e) {
+          console.warn("Compilation failed:", e);
+          console.warn("Blocks:", blocks.map(b => b.type));
+          _compiled = null;
+          return null;
+        }
+      }
+
+      function hlWgsl(wgsl) {
+        return wgsl
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\b(fn|let|var|const|if|else|for|return|loop|break|continue|switch|case|default|struct)\b/g, '<span class="kw">$1</span>')
+          .replace(/\b(array|vec2|vec3|vec4|mat2x2|mat3x3|mat4x4|f32|u32|i32|bool)\b/g, '<span class="type">$1</span>')
+          .replace(/\b(main|max|min|exp|log|sqrt|tanh|abs|sign|floor|ceil|round|clamp|dot|cross|normalize|length|pow|sin|cos|select)\b/g, '<span class="fn">$1</span>')
+          .replace(/(@\w+)/g, '<span class="kw">$1</span>')
+          .replace(/\b(\d+\.?\d*[uf]?)\b/g, '<span class="num">$1</span>')
+          .replace(/(\/\/.*)/g, '<span class="cm">$1</span>');
+      }
+
       function genCode() {
         const o = document.getElementById("co");
         if (!blocks.length) {
           o.innerHTML =
             '<span class="cm">// drag blocks to see generated code</span>';
+          _compiled = null;
           updStats();
           return;
         }
+        compileBlocks();
         if (tab === "hl") o.innerHTML = genHL();
         else if (tab === "rs") o.innerHTML = genRS();
         else if (tab === "wg") o.innerHTML = genWG();
@@ -1572,177 +1768,86 @@
       }
 
       function genRS() {
-        let L = [
-          `<span class="cm">// ReScript IR</span>`,
-          `<span class="kw">open</span> <span class="type">Types</span>\n`,
-          `<span class="kw">let</span> graph = {`,
-          `  nodes: [`,
-        ];
-        blocks.forEach((b, i) => {
-          const d = BD[b.type],
-            cm = i < blocks.length - 1 ? "," : "";
-          if (b.type === "input")
-            L.push(
-              `    {id:<span class="num">${i}</span>, op:<span class="fn">Input</span>({shape:[<span class="dim">${d.p.shape.join(",")}</span>], dtype:<span class="type">F32</span>}), inputs:[], name:<span class="fn">Some</span>(<span class="str">"input"</span>)}${cm}`,
-            );
-          else if (b.type === "linear")
-            L.push(
-              `    {id:<span class="num">${i}</span>, op:<span class="fn">Dense</span>({units:<span class="num">${d.p.units}</span>, useBias:<span class="num">true</span>}), inputs:[<span class="num">${i - 1}</span>], name:<span class="fn">Some</span>(<span class="str">"linear_${i}"</span>)}${cm}`,
-            );
-          else if (b.type === "conv2d")
-            L.push(
-              `    {id:<span class="num">${i}</span>, op:<span class="fn">Conv2D</span>({filters:<span class="num">${d.p.filters}</span>, kernel:(<span class="num">${d.p.kernel}</span>,<span class="num">${d.p.kernel}</span>), stride:(<span class="num">${d.p.stride}</span>,<span class="num">${d.p.stride}</span>), padding:<span class="type">Same</span>}), inputs:[<span class="num">${i - 1}</span>]}${cm}`,
-            );
-          else if (b.type === "softmax")
-            L.push(
-              `    {id:<span class="num">${i}</span>, op:<span class="fn">Softmax</span>({axis:<span class="num">${d.p.axis}</span>}), inputs:[<span class="num">${i - 1}</span>]}${cm}`,
-            );
-          else if (b.type === "layernorm")
-            L.push(
-              `    {id:<span class="num">${i}</span>, op:<span class="fn">LayerNorm</span>({axes:[<span class="num">-1</span>], epsilon:<span class="num">1e-5</span>}), inputs:[<span class="num">${i - 1}</span>]}${cm}`,
-            );
-          else if (b.type === "attention")
-            L.push(
-              `    {id:<span class="num">${i}</span>, op:<span class="fn">ScaledDotProductAttention</span>({dropout:<span class="num">0.0</span>, causal:<span class="num">${d.p.causal}</span>}), inputs:[<span class="num">${i - 1}</span>]}${cm}`,
-            );
-          else
-            L.push(
-              `    {id:<span class="num">${i}</span>, op:<span class="fn">${d.n}</span>, inputs:[<span class="num">${i > 0 ? i - 1 : ""}</span>]}${cm}`,
-            );
+        if (!_compiled) return '<span class="cm">// compilation failed</span>';
+        let L = [`<span class="cm">// Real compiler graph (${_compiled.buffers.length} buffers, ${_compiled.ops.length} ops)</span>\n`];
+        L.push(`<span class="kw">let</span> graph = Compiler.<span class="fn">createGraph</span>();\n`);
+
+        const graph = buildGraph();
+        graph.nodes.forEach((node) => {
+          const opStr = typeof node.op === "string" ? node.op : node.op.TAG || JSON.stringify(node.op);
+          const shapeStr = node.outputShapes[0] ? `[${node.outputShapes[0].join(", ")}]` : "[]";
+          const inputStr = node.inputs.map(r => `<span class="num">${r.nodeId}</span>`).join(", ");
+          const nameStr = node.name ? `<span class="str">"${node.name}"</span>` : '<span class="cm">_</span>';
+
+          L.push(
+            `<span class="cm">// ${node.kind}</span> <span class="fn">${opStr}</span>  →  <span class="dim">${shapeStr}</span>`
+          );
+          L.push(
+            `<span class="kw">let</span> n${node.id} = <span class="fn">addNode</span>(graph, ` +
+            `<span class="type">${opStr}</span>, [${inputStr}], ${nameStr});`
+          );
+          L.push('');
         });
-        L.push(
-          `  ], inputIds:[<span class="num">0</span>], outputIds:[<span class="num">${blocks.length - 1}</span>], nextId:<span class="num">${blocks.length}</span>}`,
-        );
+
         return L.join("\n");
       }
 
       function genWG() {
-        let L = [
-          `<span class="cm">// WGSL compute shaders generated by Codegen.res</span>\n`,
-        ];
-        blocks.forEach((b, i) => {
-          const d = BD[b.type];
-          if (b.type === "input") return;
-          L.push(`<span class="cm">// ═══ ${d.n} (node ${i}) ═══</span>`);
-          const hdr = `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; input: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`;
-          const main = `<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">let</span> idx = gid.x;`;
-          if (b.type === "relu") {
-            L.push(hdr + "\n" + main);
-            L.push(
-              `  output[idx] = <span class="fn">max</span>(input[idx], <span class="num">0.0</span>);\n}\n`,
-            );
-          } else if (b.type === "gelu") {
-            L.push(hdr + "\n" + main);
-            L.push(
-              `  <span class="kw">let</span> x = input[idx];\n  output[idx] = <span class="num">0.5</span> * x * (<span class="num">1.0</span> + <span class="fn">tanh</span>(<span class="num">0.7978845</span> * (x + <span class="num">0.044715</span> * x * x * x)));\n}\n`,
-            );
-          } else if (b.type === "sigmoid") {
-            L.push(hdr + "\n" + main);
-            L.push(
-              `  output[idx] = <span class="num">1.0</span> / (<span class="num">1.0</span> + <span class="fn">exp</span>(-input[idx]));\n}\n`,
-            );
-          } else if (b.type === "silu") {
-            L.push(hdr + "\n" + main);
-            L.push(
-              `  <span class="kw">let</span> x = input[idx];\n  output[idx] = x / (<span class="num">1.0</span> + <span class="fn">exp</span>(-x));\n}\n`,
-            );
-          } else if (b.type === "linear") {
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; a: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; b: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`,
-            );
-            L.push(
-              `<span class="kw">const</span> N = <span class="num">${d.p.units}</span>u;\n`,
-            );
-            L.push(
-              `<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">let</span> idx = gid.x;\n  <span class="kw">if</span> (idx >= N) { <span class="kw">return</span>; }\n  <span class="kw">var</span> sum = <span class="num">0.0</span>;\n  <span class="kw">for</span> (<span class="kw">var</span> i = <span class="num">0</span>u; i < K; i++) {\n    sum += a[i] * b[i * N + idx];\n  }\n  output[idx] = sum;\n}\n`,
-            );
-          } else if (b.type === "attention") {
-            L.push(
-              `<span class="cm">// Scaled Dot-Product Attention: Q·Kᵀ/√d → softmax → V</span>`,
-            );
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; Q: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
-            );
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; K: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
-            );
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read&gt; V: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
-            );
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(3) <span class="kw">var</span>&lt;storage, read_write&gt; out: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`,
-            );
-            L.push(
-              `<span class="kw">const</span> HEADS=<span class="num">${d.p.heads}</span>u; <span class="kw">const</span> DIM=<span class="num">${d.p.dim}</span>u;\n<span class="kw">const</span> HD = DIM/HEADS;\n<span class="kw">const</span> SCALE = <span class="num">1.0</span>/<span class="fn">sqrt</span>(<span class="fn">f32</span>(HD));\n`,
-            );
-            L.push(
-              `<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">var</span> score = <span class="num">0.0</span>;\n  <span class="kw">for</span> (<span class="kw">var</span> d=<span class="num">0</span>u; d<HD; d++) {\n    score += Q[q_off+d] * K[k_off+d];\n  }\n  score *= SCALE;`,
-            );
-            if (d.p.causal)
-              L.push(
-                `  <span class="kw">if</span> (col > row) { score = <span class="num">-1e9</span>; } <span class="cm">// causal mask</span>`,
-              );
-            L.push(
-              `  <span class="cm">// softmax + V projection...</span>\n}\n`,
-            );
-          } else if (b.type === "layernorm") {
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(0) <span class="kw">var</span>&lt;storage, read&gt; input: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
-            );
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(1) <span class="kw">var</span>&lt;storage, read&gt; gamma: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
-            );
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(2) <span class="kw">var</span>&lt;storage, read&gt; beta: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;`,
-            );
-            L.push(
-              `<span class="kw">@group</span>(0) <span class="kw">@binding</span>(3) <span class="kw">var</span>&lt;storage, read_write&gt; output: <span class="type">array</span>&lt;<span class="type">f32</span>&gt;;\n`,
-            );
-            L.push(
-              `<span class="kw">@compute</span> <span class="kw">@workgroup_size</span>(<span class="num">256</span>)\n<span class="kw">fn</span> <span class="fn">main</span>(<span class="kw">@builtin</span>(global_invocation_id) gid: <span class="type">vec3</span>&lt;<span class="type">u32</span>&gt;) {\n  <span class="kw">var</span> mean=<span class="num">0.0</span>;\n  <span class="kw">for</span>(<span class="kw">var</span> i=<span class="num">0</span>u;i<N;i++){mean+=input[off+i];}\n  mean/=<span class="fn">f32</span>(N);\n  <span class="kw">var</span> v=<span class="num">0.0</span>;\n  <span class="kw">for</span>(<span class="kw">var</span> i=<span class="num">0</span>u;i<N;i++){<span class="kw">let</span> d=input[off+i]-mean;v+=d*d;}\n  v/=<span class="fn">f32</span>(N);\n  <span class="kw">let</span> inv=<span class="num">1.0</span>/<span class="fn">sqrt</span>(v+<span class="num">${d.p.eps}</span>);\n  output[idx]=gamma[j]*(input[idx]-mean)*inv+beta[j];\n}\n`,
-            );
-          } else {
-            L.push(hdr + "\n" + main);
-            L.push(
-              `  output[idx] = <span class="fn">${b.type}</span>(input[idx]);\n}\n`,
-            );
-          }
+        if (!_compiled || !_compiled.ops.length)
+          return '<span class="cm">// no WGSL kernels generated</span>';
+        let L = [`<span class="cm">// ${_compiled.ops.length} real WGSL compute shader(s) from Codegen.res</span>\n`];
+        _compiled.ops.forEach((op, i) => {
+          L.push(`<span class="cm">// ─── Kernel ${i}: ${op.kernel.name} ───</span>`);
+          L.push(`<span class="cm">// dispatch: [${op.dispatch.workgroupCount.join(", ")}]</span>\n`);
+          L.push(hlWgsl(op.kernel.wgsl));
+          L.push('');
         });
         return L.join("\n");
       }
 
       function genDP() {
-        let L = [`<span class="cm">// Dispatch table</span>\n`];
-        blocks.forEach((b, i) => {
-          if (b.type === "input") return;
-          const d = BD[b.type];
-          const wg = Math.ceil(784 / 256);
+        if (!_compiled || !_compiled.ops.length)
+          return '<span class="cm">// no dispatch info</span>';
+        let L = [`<span class="cm">// Dispatch table (${_compiled.ops.length} kernels)</span>\n`];
+        _compiled.ops.forEach((op, i) => {
+          const wg = op.dispatch.workgroupCount;
+          const bindings = op.kernel.bindings.length;
+          const inputs = op.inputBufferIds.join(", ");
+          const outputs = op.outputBufferIds.join(", ");
           L.push(
-            `{ kernel: <span class="str">"${b.type}_${i}"</span>, workgroups: [<span class="num">${wg}</span>,<span class="num">1</span>,<span class="num">1</span>], bindings: <span class="num">${b.type === "linear" || b.type === "attention" || b.type === "layernorm" ? 4 : 2}</span> }\n`,
+            `{ <span class="str">kernel</span>: <span class="str">"${op.kernel.name}"</span>,` +
+            ` <span class="str">workgroups</span>: [<span class="num">${wg[0]}</span>, <span class="num">${wg[1]}</span>, <span class="num">${wg[2]}</span>],` +
+            ` <span class="str">bindings</span>: <span class="num">${bindings}</span>,` +
+            ` <span class="str">in</span>: [<span class="num">${inputs}</span>],` +
+            ` <span class="str">out</span>: [<span class="num">${outputs}</span>] }\n`
           );
         });
+
+        L.push(`\n<span class="cm">// Buffers: ${_compiled.buffers.length}</span>`);
+        L.push(`<span class="cm">// Inputs: [${_compiled.inputBufferIds.join(", ")}]</span>`);
+        L.push(`<span class="cm">// Weights: [${_compiled.weightBufferIds.join(", ")}] (${_compiled.weightNames.join(", ")})</span>`);
+        L.push(`<span class="cm">// Outputs: [${_compiled.outputBufferIds.join(", ")}]</span>`);
+        L.push(`<span class="cm">// Total VRAM: ${(_compiled.totalBufferSize / 1024).toFixed(1)} KB</span>`);
         return L.join("\n");
       }
 
       function updStats() {
-        const k = blocks.filter((b) => b.type !== "input").length;
-        let v = 0;
-        blocks.forEach((b) => {
-          const d = BD[b.type];
-          if (d.p.units) v += d.p.units * 4;
-          if (d.p.filters) v += d.p.filters * d.p.kernel * d.p.kernel * 4;
-          if (d.p.vocab) v += d.p.vocab * d.p.dim * 4;
-        });
-        document.getElementById("sk").textContent = k;
-        document.getElementById("sb2").textContent = blocks.length * 2;
-        document.getElementById("sv").textContent =
-          v > 1048576
-            ? (v / 1048576).toFixed(1) + " MB"
-            : v > 1024
-              ? (v / 1024).toFixed(1) + " KB"
-              : v + " B";
+        if (_compiled) {
+          document.getElementById("sk").textContent = _compiled.ops.length;
+          document.getElementById("sb2").textContent = _compiled.buffers.length;
+          const v = _compiled.totalBufferSize;
+          document.getElementById("sv").textContent =
+            v > 1048576
+              ? (v / 1048576).toFixed(1) + " MB"
+              : v > 1024
+                ? (v / 1024).toFixed(1) + " KB"
+                : v + " B";
+        } else {
+          document.getElementById("sk").textContent = "0";
+          document.getElementById("sb2").textContent = "0";
+          document.getElementById("sv").textContent = "0 B";
+        }
       }
-
       function updUI() {
         document.getElementById("bc").textContent = blocks.length + " blocks";
       }
@@ -1761,8 +1866,9 @@
         genCode();
       });
 
-      function loadExample(list) {
+      function loadExample(list, inputShape) {
         document.getElementById("btnClear").click();
+        if (inputShape) BD.input.p.shape = inputShape;
         setTimeout(
           () =>
             list.forEach((t, i) =>
@@ -1791,7 +1897,7 @@
             "flatten",
             "linear",
             "softmax",
-          ]),
+          ], [1, 28, 28, 1]),
         );
       document
         .getElementById("btnTx")
@@ -1806,7 +1912,7 @@
             "gelu",
             "linear",
             "softmax",
-          ]),
+          ], [1, 64]),
         );
       document
         .getElementById("btnAe")
@@ -1821,7 +1927,7 @@
             "relu",
             "linear",
             "sigmoid",
-          ]),
+          ], [1, 784]),
         );
       document
         .getElementById("btnLstm")
@@ -1833,7 +1939,7 @@
             "dropout",
             "linear",
             "softmax",
-          ]),
+          ], [1, 32]),
         );
 
       // Resize
