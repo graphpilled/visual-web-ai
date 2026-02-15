@@ -1638,9 +1638,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 let genRoPEKernel = (numQHeads: int, numKVHeads: int, headDim: int, ropeTheta: float): kernel => {
   let totalQDim = numQHeads * headDim
   let totalKDim = numKVHeads * headDim
-  let halfDim = headDim / 2
-  let maxWork = Math.Int.max(numQHeads, numKVHeads) * halfDim
-  let workgroups = (maxWork + workgroupSize - 1) / workgroupSize
   
   let wgsl = `@group(0) @binding(0) var<storage, read_write> q: array<f32>;
 @group(0) @binding(1) var<storage, read_write> k: array<f32>;
