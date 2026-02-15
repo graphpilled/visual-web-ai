@@ -767,9 +767,16 @@ let addScalar = (graph: graphBuilder, x: int, scalar: float): int => {
 // ============================================
 // Transformer Building Blocks
 // ============================================
-
-let embedding = (graph: graphBuilder, indices: int, weights: int): int =>
-  addNode(graph, Embedding({numEmbeddings: 0, embeddingDim: 0}), [indices, weights], None)
+let embedding = (graph: graphBuilder, indices: int, weights: int): int => {
+  let weightsNode = graph.nodes->Array.find(n => n.id == weights)
+  let weightsShape = switch weightsNode {
+  | Some(node) => node.outputShapes->Array.get(0)->Option.getOr([])
+  | None => []
+  }
+  let numEmbeddings = weightsShape->Array.get(0)->Option.getOr(0)
+  let embeddingDim = weightsShape->Array.get(1)->Option.getOr(0)
+  addNode(graph, Embedding({numEmbeddings, embeddingDim}), [indices, weights], None)
+}
 
 let layerNormWithParams = (
   graph: graphBuilder,
